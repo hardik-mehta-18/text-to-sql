@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 
 import google.generativeai as genai
-
+from app.query.sql_column_fixer import fix_sql_columns
 from app.config import get_settings
 from app.query.planner import QueryPlan, TableContext
 from app.utils.gemini_key_manager import get_key_manager
@@ -106,6 +106,53 @@ def fix_distinct_order_by(sql: str) -> str:
         logger.info(f"[fix_distinct_order_by] Added '{col_expr.sql(dialect='tsql')}' to SELECT for DISTINCT compatibility")
 
     return tree.sql(dialect="tsql")
+
+
+def enforce_explicit_limit(sql: str, question: str, dialect: str = "sqlserver") -> str:
+    """
+    If the user explicitly asked for N records, enforce TOP N / LIMIT N
+    in the final SQL regardless of what the LLM generated.
+    """
+    # Extract explicit number from question
+    pattern = r'\b(?:top|first|last|show|give\s+me|limit|only)\s+(\d+)\b'
+    match = re.search(pattern, question, re.IGNORECASE)
+    if not match:
+        return sql  # no explicit number found — leave as-is
+
+    requested_n = int(match.group(1))
+
+    if dialect.lower() == "sqlserver":
+        # Replace TOP <any_number> with TOP <requested_n>
+        sql = re.sub(
+            r'\bSELECT\s+DISTINCT\s+TOP\s+\d+\b',
+            f'SELECT DISTINCT TOP {requested_n}',
+            sql,
+            flags=re.IGNORECASE
+        )
+        sql = re.sub(
+            r'\bSELECT\s+TOP\s+\d+\b',
+            f'SELECT TOP {requested_n}',
+            sql,
+            flags=re.IGNORECASE
+        )
+        # If no TOP at all, inject it
+        if not re.search(r'\bTOP\s+\d+\b', sql, re.IGNORECASE):
+            sql = re.sub(
+                r'\bSELECT\s+DISTINCT\b',
+                f'SELECT DISTINCT TOP {requested_n}',
+                sql,
+                flags=re.IGNORECASE,
+                count=1
+            )
+    else:
+        # For non-SQL Server: replace or append LIMIT
+        if re.search(r'\bLIMIT\s+\d+\b', sql, re.IGNORECASE):
+            sql = re.sub(r'\bLIMIT\s+\d+\b', f'LIMIT {requested_n}', sql, flags=re.IGNORECASE)
+        else:
+            sql = sql.rstrip().rstrip(';') + f' LIMIT {requested_n}'
+
+    logger.info(f"[enforce_explicit_limit] Enforced TOP/LIMIT {requested_n} from question")
+    return sql
 
 
 class SQLGenerator:
@@ -300,14 +347,28 @@ class SQLGenerator:
             • Each column in SELECT must be verified in the SCHEMA for its table.
 
             =====================
-            LIMIT / TOP RULES
+            LIMIT / TOP RULES  
             =====================
-            STEP 1 — Aggregate query (how many / count / sum / avg)? → NO limit.
-            STEP 2 — User explicitly said "top N / first N / show N"? → use exactly N.
-            STEP 3 — Otherwise: check primary table ROWS in SCHEMA.
-                    ROWS > 2000  → {limit_syntax}
-                    ROWS ≤ 2000  → NO limit at all.
+            
+            ⚠️ STEP 1 IS ABSOLUTE — IF IT MATCHES, STOP. DO NOT PROCEED TO STEP 2 OR 3.
+
+            STEP 1 — Did the user explicitly state a number of records? (HIGHEST PRIORITY — OVERRIDES EVERYTHING)
+            Signals: "top 10", "top 5", "first 20", "last 5", "show 15", "give me 100", "limit 50"
+            → IF YES: Use EXACTLY that number. No more, no less.
+            ✅ "give me last 10 incidents"  → SELECT DISTINCT TOP 10 ... ORDER BY ... DESC
+            ✅ "show top 5 users"           → SELECT DISTINCT TOP 5 ...
+            ⛔ NEVER use TOP 1000 when user said "top 10" — this is WRONG
+            ⛔ NEVER apply the default max_rows limit when user gave an explicit number
+
+            STEP 2 — Is the question asking for an aggregate? (count / sum / avg / how many)
+            → IF YES: NO limit at all. Aggregates must process all rows.
+
+            STEP 3 — No explicit number, not an aggregate → check primary table ROWS in SCHEMA.
+            ROWS > 2000  → {limit_syntax}
+            ROWS ≤ 2000  → NO limit at all.
             Use only the FROM table row count. Ignore joined tables.
+
+            =====================
 
             =====================
             INTENT DETECTION
@@ -392,6 +453,130 @@ class SQLGenerator:
             CRITICAL: Return ONLY valid JSON. No markdown, no plain text outside the JSON.
         """
 
+        _TABLE_ROLE_REASONING = """
+            =====================
+            TABLE ROLE REASONING (run this BEFORE selecting tables)
+            =====================
+            When a person's name appears in the question, the person's table (BNR_UserDetails
+            or BNR_Service_User) is ALMOST NEVER the primary/FROM table.
+
+            Follow this 3-step process:
+
+            STEP 1 — What does the user want to GET?
+            Ask: "What entity is the answer about?"
+            Examples:
+            "Hardik's associated service users"   → answer is about SERVICE USERS
+            "which staff work with John"          → answer is about STAFF
+            "incidents of Vikas"                  → answer is about INCIDENTS
+            "risk assessments for Sarah"          → answer is about RISK ASSESSMENTS
+            "support plans of Krunal"             → answer is about SUPPORT PLANS
+            "what is John's status"               → answer IS about the person → UserDetails IS primary
+
+            STEP 2 — What table owns that entity?
+            The table that stores the answer entity = PRIMARY/FROM table.
+            service user associations  → BNR_UserDetailServiceUser
+            incidents                  → BNR_Incidents
+            risk assessments           → BNR_RiskAssessment
+            support plans              → BNR_ServiceUserSupportPlan
+            person's own status/info   → BNR_UserDetails or BNR_Service_User
+
+            STEP 3 — The person's name is a FILTER, not a primary table signal.
+            The resolved person table (BNR_UserDetails / BNR_Service_User) participates
+            as a JOIN to apply the name filter — it is NOT the FROM table unless the
+            answer itself is about that person's own profile/status/account.
+
+            DECISION TABLE:
+            ┌──────────────────────────────────────────┬──────────────────────────────┬─────────────────────────┐
+            │ Question pattern                         │ PRIMARY table                │ Person table role       │
+            ├──────────────────────────────────────────┼──────────────────────────────┼─────────────────────────┤
+            │ "[person]'s associated service users"    │ BNR_UserDetailServiceUser    │ JOIN for name filter    │
+            │ "staff who work with [service user]"     │ BNR_UserDetailServiceUser    │ JOIN for name filter    │
+            │ "incidents of/involving [person]"        │ BNR_Incidents                │ JOIN for name filter    │
+            │ "risk assessments for [person]"          │ BNR_RiskAssessment           │ JOIN for name filter    │
+            │ "support plans of [person]"              │ BNR_ServiceUserSupportPlan   │ JOIN for name filter    │
+            │ "safeguarding for [person]"              │ BNR_Safeguarding             │ JOIN for name filter    │
+            │ "courses/training of [person]"           │ BNR_OperatorCourse           │ JOIN for name filter    │
+            │ "what is [person]'s status/role/type"    │ BNR_UserDetails              │ IS the primary table    │
+            │ "show me [person]'s profile/details"     │ BNR_UserDetails              │ IS the primary table    │
+            │ "is [person] active/on leave/archived"   │ BNR_UserDetails              │ IS the primary table    │
+            └──────────────────────────────────────────┴──────────────────────────────┴─────────────────────────┘
+
+            RULE: If the question contains a possessive or relational phrase
+            ("X's [something]", "of X", "for X", "involving X", "by X")
+            where [something] is NOT the person's own profile data →
+            the [something] entity's table is PRIMARY, person table is a JOIN filter.
+            """
+        _PRIMARY_TABLE_REASONING = """
+            =====================
+            PRIMARY TABLE SELECTION (MANDATORY — run before writing any SQL)
+            =====================
+            The resolved person table is a FILTER participant, not automatically primary.
+
+            ASK YOURSELF: "What entity is the final answer rows about?"
+
+            The table that OWNS that entity = your FROM table.
+            ── ASSOCIATION QUERY SPECIAL CASE (READ THIS CAREFULLY) ────────────
+            For "person X's associated service users" or "service users of staff X":
+
+            IF the resolved person is STAFF (BNR_UserDetails):
+            → Staff is the FILTER side. Service users are the RESULT side.
+            → CORRECT tables: BNR_UserDetailServiceUser + BNR_UserDetails + BNR_Service_User
+            → CORRECT pattern:
+                FROM BNR_UserDetailServiceUser t1
+                JOIN BNR_UserDetails t2 ON t1.UserDetailsId = t2.Id
+                    WHERE t2.FirstName LIKE '%{first}%' AND t2.LastName LIKE '%{last}%'
+                JOIN BNR_Service_User t3 ON t1.ServiceUserId = t3.Id
+                SELECT t3.FirstName, t3.Surname, t3.Status
+            ⛔ NEVER filter the staff name on BNR_Service_User
+            ⛔ NEVER use a subquery on BNR_Service_User to find a staff member
+
+            IF the resolved person is SERVICE USER (BNR_Service_User):
+            → Service user is the FILTER side. Staff are the RESULT side.
+            → CORRECT pattern:
+                FROM BNR_UserDetailServiceUser t1
+                JOIN BNR_Service_User t2 ON t1.ServiceUserId = t2.Id
+                    WHERE t2.FirstName LIKE '%{first}%' AND t2.Surname LIKE '%{last}%'
+                JOIN BNR_UserDetails t3 ON t1.UserDetailsId = t3.Id
+                SELECT t3.FirstName, t3.LastName, t3.Email, t3.Phone
+            ⛔ NEVER filter the service user name on BNR_UserDetails
+            =====================
+            EXAMPLES OF CORRECT REASONING:
+
+            Q: "Hardik Pandya's associated service users"
+            → Answer rows are about: service user associations
+            → FROM: BNR_UserDetailServiceUser
+            → JOIN BNR_UserDetails to filter by "Hardik Pandya"
+            → JOIN BNR_Service_User to SELECT service user details
+
+            Q: "incidents involving Sarah"
+            → Answer rows are about: incidents
+            → FROM: BNR_Incidents
+            → JOIN BNR_UserDetails or BNR_Service_User to filter by "Sarah"
+
+            Q: "show me Vikas's risk assessments"
+            → Answer rows are about: risk assessments
+            → FROM: BNR_RiskAssessment
+            → JOIN person table to filter by "Vikas"
+
+            Q: "what is John's employment status"
+            → Answer rows are about: the person's own status
+            → FROM: BNR_UserDetails  ← person table IS primary here
+            → WHERE filter by "John"
+
+            Q: "which staff work with service user Priya"
+            → Answer rows are about: staff-service user links
+            → FROM: BNR_UserDetailServiceUser
+            → JOIN BNR_Service_User to filter by "Priya"
+            → JOIN BNR_UserDetails to SELECT staff details
+
+            RULE: A person's name in the question = apply name filter via JOIN.
+                It does NOT mean that person's table is the FROM table.
+                Only make person table primary when the question is about
+                that person's OWN account data (status, role, type, profile).
+            =====================
+            """
+
+
         user_entity_block = ""
         if plan.resolved_user_table and plan.user_entity_name:
             name_parts = plan.user_entity_name.strip().split()
@@ -407,54 +592,42 @@ class SQLGenerator:
 
             user_entity_block = f"""
                 =====================
-                PERSON FILTER (HIGHEST PRIORITY — ANTI-HALLUCINATION)
+                PERSON FILTER — RESOLVED (HIGHEST PRIORITY)
                 =====================
-                Person mentioned: "{plan.user_entity_name}"
-                Resolved table  : {plan.resolved_user_table}
-                Correct Last Name Column: **{last_name_col}**  ← YOU MUST USE THIS COLUMN
+                Person mentioned : "{plan.user_entity_name}"
+                Resolved table   : {plan.resolved_user_table}
+                Last name column : {last_name_col}
 
-                CRITICAL RULES — VIOLATING THESE WILL CAUSE SQL ERROR:
-                1. For table {plan.resolved_user_table}, you **MUST** use `{last_name_col}` for any last name filtering.
-                2. NEVER use column `LastName` when querying BNR_Service_User.
-                3. NEVER use column `Surname` when querying BNR_UserDetails.
-                4. PreferredName has highest priority if it exists in the schema.
-                5. Only use columns that actually exist in the resolved table.
+                THIS PERSON IS IN: {plan.resolved_user_table}
+                SEARCH FOR THIS PERSON ONLY IN: {plan.resolved_user_table}
+                NEVER search for this person's name in any other table.
 
-                NAME FILTER TEMPLATES (Use exactly):
+                ⛔ CRITICAL — NAME FILTER TABLE LOCK:
+                The name "{plan.user_entity_name}" MUST be filtered on {plan.resolved_user_table}.
+                NEVER apply this name filter on BNR_Service_User if resolved table is BNR_UserDetails.
+                NEVER apply this name filter on BNR_UserDetails if resolved table is BNR_Service_User.
+                The resolved table is the ONLY table where you search for this person's name.
 
-                FULL NAME ({first_name} + {last_name}):
-                WHERE (
-                    (t1.FirstName LIKE '%{first_name}%' AND t1.{last_name_col} LIKE '%{last_name}%')
-                    OR t1.PreferredName LIKE '%{full_name}%'
-                )
+                WHATEVER alias you assign to {plan.resolved_user_table} in your query,
+                apply the name filter on THAT alias:
 
-                SINGLE NAME (only one word):
-                WHERE (
-                    t1.PreferredName LIKE '%{first_name}%'
-                    OR t1.FirstName LIKE '%{first_name}%'
-                    OR t1.{last_name_col} LIKE '%{first_name}%'
-                )
+                FULL NAME filter (apply on whichever alias = {plan.resolved_user_table}):
+                alias.FirstName LIKE '%{first_name}%' AND alias.{last_name_col} LIKE '%{last_name}%'
 
-                EMPTY VALUE GUARD:
-                - If last_name is empty, remove the entire {last_name_col} condition.
-                - NEVER generate `LIKE '%%'` or `LIKE ''`.
+                SINGLE NAME filter:
+                alias.FirstName LIKE '%{first_name}%' OR alias.{last_name_col} LIKE '%{first_name}%'
 
-                ANTI-HALLUCINATION RULE (HIGHEST PRIORITY):
-                You have been explicitly told the correct last name column for this table is `{last_name_col}`.
-                Do NOT invent or use any other column name for last name filtering.
+                EMPTY VALUE GUARD: Never generate LIKE '%%' or LIKE ''.
 
-                JOINED TABLE COLUMN RULES (CRITICAL — prevents hallucination on t2):
-                =====================
-                When joining BNR_Service_User to find associated service users:
-                - BNR_Service_User does NOT have: UserDetailsId, PreferredName, LastName, Email, Phone
-                - BNR_Service_User DOES have: FirstName, Surname (not LastName!), SiteId, Status
-                - The FK from BNR_Service_User → BNR_UserDetails is via a junction/link table (e.g. BNR_UserDetailServiceUser)
-                OR check the SCHEMA for the actual FK column name — NEVER invent it.
-                - NEVER select t2.LastName if t2 is BNR_Service_User — the column is t2.Surname
-                - NEVER select t2.Email, t2.Phone, t2.PreferredName on BNR_Service_User unless the SCHEMA lists them.
-                - ONLY select columns that are explicitly listed in the SCHEMA for BNR_Service_User.
-
+                COLUMN OWNERSHIP (SELECT columns):
+                When {plan.resolved_user_table} = BNR_UserDetails:
+                - Email, Phone, LastName → SELECT from BNR_UserDetails alias
+                - Surname, SiteId        → these do NOT exist on BNR_UserDetails
+                When {plan.resolved_user_table} = BNR_Service_User:
+                - FirstName, Surname, SiteId, Status → SELECT from BNR_Service_User alias
+                - Email, Phone, LastName             → these do NOT exist on BNR_Service_User
             """
+
 
         # ── Assemble prompt from sections — conditional, no dead sections ──────
         sections = [
@@ -473,6 +646,10 @@ class SQLGenerator:
             f"{schema_context}"
         )
         sections.append(_SCHEMA_ENFORCEMENT)
+
+        sections.append(_TABLE_ROLE_REASONING)
+
+        sections.append(_PRIMARY_TABLE_REASONING)
 
         sections.append(_ANTI_HALLUCINATION_BLOCK)
 
@@ -1173,10 +1350,18 @@ class SQLGenerator:
             if chat_response and not sql:
                 logger.info(f"Chat intent detected: {explanation}")
                 return GenerationResult(sql="", explanation=explanation, chat_response=chat_response)
+            fix_result = await fix_sql_columns(
+                sql=sql,
+                relevant_tables=plan.relevant_tables,
+                dialect=plan.dialect,
+            )
+            logger.info(f'Fix result : {fix_result}')
+            sql = fix_result.fixed_sql
 
             sql = expand_boolean_conditions(sql)
             sql = ensure_distinct(sql)
             sql = fix_distinct_order_by(sql)
+            sql = enforce_explicit_limit(sql, plan.question, plan.dialect)
             logger.info(f"Sql -> {sql}")
             if not sql:
                 raise ValueError("Gemini returned empty SQL")

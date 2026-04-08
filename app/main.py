@@ -960,25 +960,6 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 return ChronoChatResponse(mode="empty", text_summary=no_data_text, page=1, pages_total=1)
  
             gen_result = await generator.generate(plan, conversation_context, ctx.qdrant_collection)
-            if gen_result.explanation == "clarification_needed" and gen_result.chat_response:
-                mem.set_pending_clarification({
-                    "original_question": question,
-                    "entity_name": corrected.user_entity_name,
-                })
-                save_session_memory(memory_key)
-                save_message(body.thread_id, "assistant", gen_result.chat_response)
-                save_user_history(
-                    user_detail_id=user_detail_id,        # already in scope from _cp_authorize
-                    question=question,
-                    ai_response=gen_result.chat_response,
-                    sql="",
-                )
-                return ChronoChatResponse(
-                    mode="clarification",
-                    text_summary=gen_result.chat_response,
-                    page=1,
-                    pages_total=1,
-                )
             if gen_result.chat_response and not gen_result.sql:
                 save_message(body.thread_id, "assistant", gen_result.chat_response)
                 save_user_history(
@@ -1120,6 +1101,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 last_error = result.error
                 conversation_context += (
                     f"\n[SQL EXECUTION ERROR on: {pre_filter_sql}\n"
+                    f"\nCheck if given all selected columns are from appropriate table and all columns are exist in the appropriate alias table"
                     f"Error: {last_error}. Rewrite the SQL.]{JSON_REMINDER}"
                 )
                 continue

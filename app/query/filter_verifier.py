@@ -38,14 +38,7 @@ class SQLFilterVerifier:
     # ──────────────────────────────────────────────────────────────────────
     # PUBLIC ENTRY POINT
     # ──────────────────────────────────────────────────────────────────────
-    def verify_and_inject(
-        self,
-        sql: str,
-        filter_keys: List[str],
-        filter_values: Dict[str, Any],
-        table_schemas: Dict[str, Any],
-        column_mappings: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> str:
+    def verify_and_inject(self, sql, filter_keys, filter_values, table_schemas, column_mappings=None):
         if not filter_keys:
             return sql
 
@@ -55,7 +48,7 @@ class SQLFilterVerifier:
             logger.error(f"SQL parsing failed: {e}")
             return sql
 
-        # Collect every table in the query with name and alias
+        # Collect ALL tables (including subquery ones) for schema awareness
         tables_in_query = []
         for table in expression.find_all(exp.Table):
             t_name  = table.name.lower()
@@ -64,9 +57,16 @@ class SQLFilterVerifier:
 
         logger.info(f"Tables in query: {[t['name'] for t in tables_in_query]}")
 
-        # Build a name→alias map for quick lookup inside BFS
-        # e.g. {"order": "t1", "product": "t2"}
-        existing_tables_alias_map = {t["name"]: t["alias"] for t in tables_in_query}
+        # ← NEW: compute which aliases are safe to reference in outer WHERE
+        outer_scope_aliases = self._get_outer_scope_aliases(expression)
+        
+        # Filter to only outer-scope tables for filter/join injection
+        outer_tables_in_query = [
+            t for t in tables_in_query
+            if t["alias"] in outer_scope_aliases
+        ]
+
+        existing_tables_alias_map = {t["name"]: t["alias"] for t in outer_tables_in_query}
 
         norm_filter_values = {k.lower(): v for k, v in filter_values.items()}
         column_mappings    = column_mappings or {}
@@ -77,21 +77,20 @@ class SQLFilterVerifier:
             k_lower = key.lower()
             val = norm_filter_values.get(k_lower)
 
-            # ── PASS 1: check every table already in the SQL ──────────────
+            # Use outer_tables_in_query for pass 1 — never inject on subquery tables
             matched = self._check_tables_in_query(
-                key, val, tables_in_query, table_schemas, column_mappings
+                key, val, outer_tables_in_query, table_schemas, column_mappings
             )
             if matched:
                 filters_to_inject.append(matched)
                 continue
 
-            # ── PASS 2: BFS from EVERY in-query table ────────────────────
             logger.info(
-                f"Filter key '{key}' not found in any in-query table. "
-                f"Starting BFS from all in-query tables."
+                f"Filter key '{key}' not found in any outer-scope table. "
+                f"Starting BFS from outer-scope tables."
             )
             bfs_result = None
-            for table_info in tables_in_query:
+            for table_info in outer_tables_in_query:
                 logger.info(f"BFS starting from table '{table_info['name']}'")
                 bfs_result = self._bfs_find_filter(
                     start_table=table_info["name"],
@@ -103,7 +102,6 @@ class SQLFilterVerifier:
                     existing_tables_alias_map=existing_tables_alias_map,
                 )
                 if bfs_result:
-                    logger.info(f"BFS resolved '{key}' starting from '{table_info['name']}'")
                     break
 
             if bfs_result:
@@ -113,7 +111,7 @@ class SQLFilterVerifier:
             else:
                 logger.warning(
                     f"Security Block: mandatory filter '{key}' could not be resolved. "
-                    f"Tables: {[t['name'] for t in tables_in_query]}"
+                    f"Tables: {[t['name'] for t in outer_tables_in_query]}"
                 )
                 raise PermissionError(
                     f"Access denied: could not enforce the mandatory '{key}' filter "
@@ -130,16 +128,16 @@ class SQLFilterVerifier:
             except Exception as e:
                 logger.error(f"Failed to inject filter '{cond_str}': {e}")
 
+        # Pass outer_tables_in_query — soft delete only on outer scope tables
         expression = self._inject_soft_delete_filters(
-            expression, tables_in_query, table_schemas
+            expression, outer_tables_in_query, table_schemas
         )
+
         result_sql = expression.sql(dialect=DIALECT_MAP.get(self.dialect.lower(), "postgres"))
-
-        # Fix SQL Server error 145: ORDER BY columns must be in SELECT with DISTINCT
         result_sql = self._fix_distinct_order_by(result_sql)
-
         logger.info(f"Final filtered SQL: {result_sql}")
         return result_sql
+
 
     # ──────────────────────────────────────────────────────────────────────
     # SOFT DELETE FILTER INJECTION
@@ -151,19 +149,29 @@ class SQLFilterVerifier:
         table_schemas: Dict[str, Any],
     ) -> any:
         """
-        For every table in the query, if it has an 'IsDeleted' column,
+        For every table in the OUTER scope only, if it has an 'IsDeleted' column,
         inject: alias.IsDeleted = 0
         """
+        # Build outer-scope-only alias set using sqlglot tree walking
+        outer_scope_aliases = self._get_outer_scope_aliases(expression)
+        
         for table_info in tables_in_query:
             t_name  = table_info["name"]
             t_alias = table_info["alias"]
+
+            # ← THE KEY FIX: skip tables whose alias only lives in a subquery
+            if t_alias not in outer_scope_aliases:
+                logger.info(
+                    f"[soft-delete] Skipping '{t_name}' (alias '{t_alias}') "
+                    f"— lives inside a subquery, not in outer scope."
+                )
+                continue
 
             schema = self._get_schema_payload(t_name, table_schemas)
             if schema is None:
                 logger.debug(f"[soft-delete] No schema for '{t_name}', skipping.")
                 continue
 
-            # Get column list
             if isinstance(schema, dict):
                 col_list = [
                     c["name"] if isinstance(c, dict) else c
@@ -174,7 +182,6 @@ class SQLFilterVerifier:
             else:
                 continue
 
-            # Case-insensitive check for IsDeleted
             is_deleted_col = next(
                 (c for c in col_list if c.lower() == "isdeleted"),
                 None
@@ -192,10 +199,41 @@ class SQLFilterVerifier:
                     logger.error(
                         f"[soft-delete] Failed to inject for '{t_name}': {e}"
                     )
-            else:
-                logger.debug(f"[soft-delete] '{t_name}' has no IsDeleted column, skipping.")
 
         return expression
+    
+    def _get_outer_scope_aliases(self, expression) -> set:
+        """
+        Returns the set of aliases that belong to the OUTER query scope only.
+        Tables inside subqueries are excluded.
+        """
+        outer_aliases = set()
+
+        outer_select = expression.find(exp.Select)
+        if outer_select is None:
+            return outer_aliases
+
+        for table in expression.find_all(exp.Table):
+            alias = table.alias if table.alias else table.name
+
+            # Walk up the parent chain manually
+            in_subquery = False
+            node = table.parent
+            while node is not None:
+                if isinstance(node, exp.Subquery):
+                    in_subquery = True
+                    break
+                if isinstance(node, exp.Select) and node is not outer_select:
+                    in_subquery = True
+                    break
+                node = node.parent
+
+            if not in_subquery:
+                outer_aliases.add(alias)
+
+        logger.debug(f"[soft-delete] Outer scope aliases: {outer_aliases}")
+        return outer_aliases
+
     # ──────────────────────────────────────────────────────────────────────
     # PASS 1 — check tables already present in the query
     # ──────────────────────────────────────────────────────────────────────

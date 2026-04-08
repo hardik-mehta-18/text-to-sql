@@ -173,56 +173,6 @@ def resolve_user_type_table(user_type_answer: str) -> Optional[str]:
     return None
 
 
-# async def build_user_type_clarification_text(entity_name: str) -> str:
-#     """Generate a natural, human-like clarification message using LLM."""
-
-#     options_text = "\n".join(
-#         f"{i + 1}. {opt['label']}" for i, opt in enumerate(USER_TYPE_OPTIONS)
-#     )
-
-#     prompt = f"""
-# You are a helpful assistant.
-
-# A user asked a question that mentions a person named "{entity_name}", but we need clarification about that PERSON — not the user asking the question.
-
-# Your task:
-# Ask the user what type of user "{entity_name}" is.
-
-# Guidelines:
-# - Be clear that you are asking about "{entity_name}"
-# - Do NOT ask about "you" or the person asking the question
-# - Be natural and conversational
-# - Keep it short and clear
-
-# Options:
-# {options_text}
-
-# Return ONLY the final message.
-# """
-
-#     try:
-#         response = await get_key_manager().generate_content(
-#             prompt,
-#             generation_config=genai.GenerationConfig(
-#                 temperature=0.7,  # more natural tone
-#                 max_output_tokens=150,
-#             ),
-#         )
-#         return response.text.strip()
-
-#     except Exception as e:
-#         logger.warning(f"LLM clarification generation failed: {e}")
-
-#         # Fallback (your current version)
-#         return await build_user_type_clarification_text(entity_name)
-
-
-
-
-# ---------------------------------------------------------------------------
-# Planner
-# ---------------------------------------------------------------------------
-
 class QueryPlanner:
     """Determines which tables are needed to answer a user question."""
 
