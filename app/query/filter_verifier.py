@@ -15,7 +15,7 @@ DIALECT_MAP = {
 
 # Tables that should never be checked directly for site_id filter
 # but their reverse_foreign_keys (parents) are still traversed
-SITE_FILTER_SKIP_TABLES = {"bnr_user_details", "bnr_abcform"}
+SITE_FILTER_SKIP_TABLES = {"BNR_User_Details", "bnr_abcform"}
 FILTER_BYPASS_TABLES = {
     "bnr_course",
     "bnr_questions",
@@ -134,6 +134,10 @@ class SQLFilterVerifier:
             expression, tables_in_query, table_schemas
         )
         result_sql = expression.sql(dialect=DIALECT_MAP.get(self.dialect.lower(), "postgres"))
+
+        # Fix SQL Server error 145: ORDER BY columns must be in SELECT with DISTINCT
+        result_sql = self._fix_distinct_order_by(result_sql)
+
         logger.info(f"Final filtered SQL: {result_sql}")
         return result_sql
 
@@ -396,6 +400,52 @@ class SQLFilterVerifier:
     # ──────────────────────────────────────────────────────────────────────
     # HELPERS
     # ──────────────────────────────────────────────────────────────────────
+    def _fix_distinct_order_by(self, sql: str) -> str:
+        """Fix SQL Server error 145: ORDER BY columns must appear in SELECT with DISTINCT.
+
+        If SELECT DISTINCT is present and ORDER BY references columns not in
+        the SELECT list, those columns are appended to the SELECT list.
+        """
+        try:
+            tree = parse_one(sql, read=DIALECT_MAP.get(self.dialect.lower(), "tsql"))
+        except Exception:
+            return sql
+
+        select_node = tree.find(exp.Select)
+        if select_node is None or not select_node.args.get("distinct"):
+            return sql
+
+        order = tree.find(exp.Order)
+        if order is None:
+            return sql
+
+        # Collect existing SELECT column expressions as normalised SQL strings
+        dialect_key = DIALECT_MAP.get(self.dialect.lower(), "tsql")
+        select_col_sqls = set()
+        for sel_expr in select_node.expressions:
+            core = sel_expr.this if isinstance(sel_expr, exp.Alias) else sel_expr
+            select_col_sqls.add(core.sql(dialect=dialect_key).lower().strip())
+
+        # Find ORDER BY columns missing from SELECT
+        missing = []
+        for ordered in order.find_all(exp.Ordered):
+            order_expr = ordered.this
+            order_sql = order_expr.sql(dialect=dialect_key).lower().strip()
+            if order_sql not in select_col_sqls:
+                missing.append(order_expr.copy())
+
+        if not missing:
+            return sql
+
+        for col_expr in missing:
+            select_node.append("expressions", col_expr)
+            logger.info(
+                f"[fix_distinct_order_by] Added '{col_expr.sql(dialect=dialect_key)}' "
+                f"to SELECT for DISTINCT compatibility"
+            )
+
+        return tree.sql(dialect=dialect_key)
+
     def _is_site_filter_skip_table(self, table_name: str, filter_key: str) -> bool:
         """
         Returns True only when:

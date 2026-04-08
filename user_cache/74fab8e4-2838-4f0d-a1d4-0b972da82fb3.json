@@ -1,0 +1,229 @@
+{
+  "records": [
+    {
+      "id": "48456BD1-061B-4053-C6E7-08D91761D4D8",
+      "first_name": "Kirav",
+      "last_name": "Sharma",
+      "preferred_name": "Kirav",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "821A15E5-0F08-43AE-A9AC-08DBEF193E77",
+      "first_name": "user1_gujrat",
+      "last_name": "gujrat",
+      "preferred_name": "user1_gujrat",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "123B05E3-6505-4628-710C-08DCF438D577",
+      "first_name": "guj 1",
+      "last_name": "fdgg",
+      "preferred_name": "fgg",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "CFDCF35D-F58B-4225-D151-08DCF80A3C69",
+      "first_name": "guj 2",
+      "last_name": "jhbj",
+      "preferred_name": "tbd",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "8629D0E9-F018-4A1A-1318-08DD93B102EC",
+      "first_name": "dfgf",
+      "last_name": "fdgfd",
+      "preferred_name": "cvb",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "18AD5FE4-ED6C-4CBE-1319-08DD93B102EC",
+      "first_name": " Vikas",
+      "last_name": "Kohli",
+      "preferred_name": "chikoo",
+      "table": "BNR_Service_User"
+    },
+    {
+      "id": "3553FBAB-58F0-42F0-C4C2-08D9175D9CF4",
+      "first_name": "IndiaAdmin",
+      "last_name": "",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "89C8952A-A5AF-4C65-C4C3-08D9175D9CF4",
+      "first_name": "Kartik",
+      "last_name": "Sharma",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "3D2978A8-EE70-4B73-C4C6-08D9175D9CF4",
+      "first_name": "Naira",
+      "last_name": "Sharma",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "FDFAABFE-15FC-4FE5-7882-08D9176C4817",
+      "first_name": "Ragav",
+      "last_name": "Sharma",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "8ED042B0-7CED-453B-ABA4-08D917981894",
+      "first_name": "nikeeta",
+      "last_name": "thakar",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "0171C4C4-2CB8-4BAB-ABA5-08D917981894",
+      "first_name": "niku",
+      "last_name": "thakar",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "59D77836-6FAE-4EEB-1B88-08DBEF17C29F",
+      "first_name": "Hardik",
+      "last_name": "Pandya",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "30542938-3DF6-4034-1B89-08DBEF17C29F",
+      "first_name": "Krunal",
+      "last_name": "Pandya1",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "FABD38AF-4210-4697-5E62-08DC9FE02344",
+      "first_name": "Yatin",
+      "last_name": "Patel",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "529114AC-3A32-479C-5E63-08DC9FE02344",
+      "first_name": "Nisarg",
+      "last_name": "Jadhav",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "4F350320-090E-4678-7334-08DCB1FAB84C",
+      "first_name": "Nisha",
+      "last_name": "Vyas",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "08919502-8577-454F-96E4-08DCB1FD5A64",
+      "first_name": "rohit",
+      "last_name": "sharma",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "130B1487-366B-4A96-96E5-08DCB1FD5A64",
+      "first_name": "sahil",
+      "last_name": "sah",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "E41A6A53-1A39-4706-C162-08DCB207B464",
+      "first_name": "SANJU",
+      "last_name": "samson",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "F601BB10-17C9-4E0E-9F28-08DCB20C1701",
+      "first_name": "mukesh",
+      "last_name": "ambani",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "95AB7BFD-1119-4638-9F29-08DCB20C1701",
+      "first_name": "anant",
+      "last_name": "ambani",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "4CAFFBB1-AF6F-468D-8B63-08DCB20DB943",
+      "first_name": "sachin 100",
+      "last_name": "tendu",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "CEFF799A-9E46-400B-A2FA-08DCF4C1A1BD",
+      "first_name": "Ritesh",
+      "last_name": "ABC UpWale",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "2EBCE83D-E9E9-48D0-F54D-08DCF802A3AB",
+      "first_name": "dd Fname",
+      "last_name": "dd LName",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "4C51A21F-AA7B-4B95-F54F-08DCF802A3AB",
+      "first_name": "Gj",
+      "last_name": "Op",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "ECF28475-2D00-4F12-F551-08DCF802A3AB",
+      "first_name": "Anu S",
+      "last_name": "Yagnik",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "0700F872-E8EF-4E3F-27F7-08DD8657E854",
+      "first_name": "harsh",
+      "last_name": "thakkar",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "8D08E03E-F4E2-4D48-0652-08DD87C8F62C",
+      "first_name": "Radhikaaa",
+      "last_name": "Ambani",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "99C74824-D491-48CE-CF16-08DD93AE53AF",
+      "first_name": "sdf",
+      "last_name": "sdfddd",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "BA929339-CB13-46F1-EB6F-08DDBD470236",
+      "first_name": "primary name chnagged",
+      "last_name": "primary check",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    },
+    {
+      "id": "B053FF1F-45CE-4AB4-F36B-08DDC921CB42",
+      "first_name": "anurag",
+      "last_name": "basu",
+      "preferred_name": "",
+      "table": "BNR_UserDetails"
+    }
+  ],
+  "loaded_at": "2026-04-08T09:23:29.699547"
+}

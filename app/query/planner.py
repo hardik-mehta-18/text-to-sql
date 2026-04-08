@@ -27,8 +27,8 @@ USER_TYPE_OPTIONS = [
     },
     {
         "label": "Staff",
-        "table": "BNR_User_Details",
-        "keywords": ["staff", "operator", "support staff", "manager", "employee", "personnel"],
+        "table": "BNR_UserDetails",
+        "keywords": ["staff", "operator", "support staff", "manager", "employee", "personnel", "maternity", "leave", "active", "inactive", "status"],
     },
     {
         "label": "Visitor",
@@ -71,6 +71,7 @@ class QueryPlan:
     pending_entity_name: Optional[str] = None
     resolved_user_table: Optional[str] = None
     user_entity_name: Optional[str] = None
+    resolved_last_name_column: Optional[str] = None
     pending_user_type_options: List[Dict] = field(default_factory=list)
     
 def _normalize_table_name(name: str) -> str:
@@ -235,54 +236,23 @@ class QueryPlanner:
         question: str,
         dialect: str,
         conversation_context: str = "",
-        # When the API has already resolved the user table (after clarification),
-        # pass it here so we skip the clarification gate entirely.
         resolved_user_table: Optional[str] = None,
-        # The name of the person detected (e.g. "Louis") — used for logging / hint injection
+        resolved_last_name_column: Optional[str] = None,   # ← NEW
         user_entity_name: Optional[str] = None,
-        # Set True if this question contains a user-entity reference detected by corrector
         has_user_reference: bool = False,
     ) -> QueryPlan:
-        """Create a query plan for the user's question.
+        """Create a query plan for the user's question."""
 
-        User-type handling
-        ------------------
-        • If `has_user_reference=True` and `resolved_user_table` is NOT set →
-          return a clarification plan immediately (no Qdrant / Gemini call).
-
-        • If `resolved_user_table` is provided → inject it as a hint into the
-          question so Qdrant and Gemini both target the right table.
-        """
-
-        # # ------------------------------------------------------------------
-        # # 1. User-entity clarification gate
-        # # ------------------------------------------------------------------
-        # No name-based clarification gate — proceed directly
         logger.info(f"Resolve user table from plan : {resolved_user_table}")
         user_opted_out = resolved_user_table == "__skip__"
         effective_resolved_table = None if user_opted_out else resolved_user_table
         logger.info(f"effective_resolved_table: {effective_resolved_table}")
-        # if has_user_reference and not effective_resolved_table and not user_opted_out:
-        #     entity_name = user_entity_name or "the person"
-        #     return QueryPlan(
-        #         question=question,
-        #         confidence=0.0,
-        #         needs_clarification=True,
-        #         clarification_questions=[await build_user_type_clarification_text(entity_name)],
-        #         relevant_tables=[],
-        #         dialect=dialect,
-        #         pending_user_type_clarification=True,
-        #         pending_entity_name=entity_name,
-        #     )
 
         # ------------------------------------------------------------------
         # 2. Enrich the question with the resolved user table hint (if any)
         # ------------------------------------------------------------------
         effective_question = question
-        # if effective_resolved_table:
-        #     effective_question = (
-        #         f"{question} [include table: {effective_resolved_table}]"
-        #     )
+        # You can keep or remove the commented part — it's optional
 
         # ------------------------------------------------------------------
         # 3. Semantic search in Qdrant
@@ -311,68 +281,30 @@ class QueryPlanner:
                 ],
                 relevant_tables=[],
                 dialect=dialect,
+                resolved_user_table=resolved_user_table,
+                resolved_last_name_column=resolved_last_name_column,   # ← Pass it
+                user_entity_name=user_entity_name,
             )
 
         candidate_tables = [self._payload_to_context(p) for p in raw_results]
 
-        # if not effective_resolved_table and not user_opted_out:
-        # matched_user_options = get_user_type_tables_in_candidates(candidate_tables)
-        # logger.info(f"Matched User options : {matched_user_options}")
-        # if len(matched_user_options) > 1:
-        #     clarification_msg = await build_multi_table_clarification_text(
-        #         question, matched_user_options
-        #     )
-        #     return QueryPlan(
-        #         question=question,
-        #         confidence=0.0,
-        #         needs_clarification=True,
-        #         clarification_questions=[clarification_msg],
-        #         relevant_tables=[],
-        #         dialect=dialect,
-        #         pending_user_type_clarification=True,
-        #         # No entity name — this is a table-ambiguity clarification
-        #         pending_entity_name=None,
-        #         # Only the matched options — not the full static list
-        #         pending_user_type_options=matched_user_options,
-        #     )
+        # ------------------------------------------------------------------
+        # 4. Force resolved user table into candidates if missing
+        # ------------------------------------------------------------------
+        if effective_resolved_table:
+            resolved_norm = _normalize_table_name(effective_resolved_table)
+            candidate_norms = {_normalize_table_name(t.table_name) for t in candidate_tables}
 
-        # elif len(matched_user_options) == 1:
-        #     # Only one user table found — auto-resolve, no need to ask
-        #     auto_table = matched_user_options[0]["table"]
-        #     effective_resolved_table = auto_table
-        #     effective_question = (
-        #         f"{question} [user table to use: {auto_table}]"
-        #     )
-
-        # # ------------------------------------------------------------------
-        # # 4. If resolved_user_table isn't already in candidates, add a stub
-        # #    so Gemini can see and select it.
-        # # ------------------------------------------------------------------
-        # if effective_resolved_table:
-        #     # Use normalized comparison — handles underscore/case mismatches
-        #     resolved_normalized = _normalize_table_name(effective_resolved_table)
-        #     candidate_names_normalized = {
-        #         _normalize_table_name(t.table_name) for t in candidate_tables
-        #     }
-
-        #     if resolved_normalized not in candidate_names_normalized:
-        #         # Table genuinely not in candidates — fetch from Qdrant
-        #         payload = await self.indexer.get_by_table_name(
-        #             collection_name, effective_resolved_table
-        #         )
-        #         if payload:
-        #             real_table = self._payload_to_context(payload)
-        #             candidate_tables.append(real_table)
-        #         else:
-        #             logger.warning(
-        #                 f"[planner] '{effective_resolved_table}' not found in Qdrant either — skipping stub."
-        #             )
-        #             # ← DO NOT add empty stub — it confuses Gemini more than helps
-        #     else:
-        #         logger.info(
-        #             f"[planner] '{effective_resolved_table}' already in candidates — skipping fetch."
-        #         )
-
+            if resolved_norm not in candidate_norms:
+                candidate_tables.append(TableContext(
+                    table_name=effective_resolved_table,
+                    schema_name="dbo",
+                    dialect="ss",
+                    description="Resolved User Table",
+                    columns=[],
+                    foreign_keys=[],
+                    row_count=0
+                ))
 
         # ------------------------------------------------------------------
         # 5. Ask Gemini which candidates are actually needed
@@ -384,18 +316,21 @@ class QueryPlanner:
         )
 
         selected_names = {n.lower() for n in analysis.get("relevant_tables", [])}
-        logger.info(f"Selected Name : {selected_names}")
-        # Always honour the resolved user table even if Gemini missed it
+        logger.info(f"Selected names from Gemini: {selected_names}")
+
         if effective_resolved_table:
             selected_names.add(effective_resolved_table.lower())
+            selected_names.add(_normalize_table_name(effective_resolved_table))
 
-        if selected_names:
-            relevant = [
-                t for t in candidate_tables if t.table_name.lower() in selected_names
-            ]
-            if not relevant:
-                relevant = candidate_tables[:5]
-        else:
+        relevant = []
+        for t in candidate_tables:
+            name_low = t.table_name.lower()
+            name_norm = _normalize_table_name(t.table_name)
+            if name_low in selected_names or name_norm in selected_names:
+                relevant.append(t)
+
+        if not relevant:
+            logger.warning("[planner] No tables matched, falling back to top candidates.")
             relevant = candidate_tables[:5]
 
         confidence = float(analysis.get("confidence", 0.6))
@@ -409,6 +344,7 @@ class QueryPlanner:
             relevant_tables=relevant,
             dialect=dialect,
             resolved_user_table=resolved_user_table,
+            resolved_last_name_column=resolved_last_name_column,   # ← Pass it down
             user_entity_name=user_entity_name,
         )
 
@@ -449,27 +385,36 @@ class QueryPlanner:
         history: str,
     ) -> dict:
         history_block = f"\n{history}\n" if history else ""
-        prompt = f'''Expert table selector. Pick EXACT table names from list ONLY.
-
+        prompt = f'''You are a expert database query planner. Your job is to select the EXACT table names from the AVAILABLE TABLES list that are required to answer the user's QUESTION.
+        
 {schema_context}
 {history_block}
 QUESTION: {question}
 
-JSON ONLY:
+RULES for Table Selection:
+1. STATUS/ACCOUNT QUERIES: If the user asks about a person's "status", "active/inactive", "employment", "maternity leave", "login", or "account details", ALWAYS include BNR_UserDetails.
+2. INCIDENT QUERIES: If the user asks about "incidents", "what happened", or "safety logs", ALWAYS include BNR_Incidents.
+3. SEARCHING FOR PEOPLE: If searching for a person by name, you may need BNR_Service_User (for care clients) or BNR_UserDetails (for staff). If unsure, include BOTH.
+4. CARE PROFILE: If the user asks about health, diagnosis, allergies, or "about me", include BNR_AboutMeServiceUser.
+5. SITES: If asking about buildings, locations, or sites, include BNR_Sites.
+
+OUTPUT FORMAT:
+Return a JSON object ONLY.
+
 {{
   "confidence": 0.95,
   "needs_clarification": false,
   "clarification_questions": [],
-  "relevant_tables": ["exact_table_name1", "exact_table_name2"],
-  "reasoning": "1 sentence why these tables"
+  "relevant_tables": ["BNR_UserDetails", "BNR_Incidents"],
+  "reasoning": "User asked for incident status which requires both tables."
 }}
 
-RULES:
-- relevant_tables: EXACT names from AVAILABLE TABLES above ONLY
-- No guessing - if unsure, low confidence + questions
-- confidence 0.9+ for obvious matches, 0.6-0.8 ambiguous, <0.6 no tables
-- needs_clarification true if <0.7
-- JSON first line, NO markdown/'''
+MANDATORY:
+- Use EXACT table names from the list above.
+- If the question is a valid database query (like status, counts, or listing records), confidence must be HIGH (0.9+).
+- ONLY mark as needs_clarification if the question is truly nonsensical or "hi/hello".
+- NEVER return markdown or explanation text outside the JSON.
+'''
 
         response_text = None
         try:

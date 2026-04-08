@@ -419,6 +419,38 @@ Do NOT mention "SQL", "database errors", "max retries", "internal error", or any
         )
         return await self._gemini_call(prompt, fallback=fallback)
 
+    async def _generate_existence_negative(self,question: str) -> str:
+        """
+        When an existence query returns 0 rows, generate a natural
+        'No, X is not Y' response instead of a generic 'no data found'.
+        """
+        prompt = f"""The user asked: "{question}"
+    A SQL query was executed to check this condition and returned 0 rows,
+    meaning the condition is definitively NOT true.
+
+    Write a single short, natural, conversational sentence that directly
+    answers NO to the user's question.
+
+    Examples:
+    - "Is Hardik on maternity leave?"  → "No, Hardik is not currently on maternity leave."
+    - "Are there any incidents at Site A?" → "There are no incidents recorded at Site A."
+    - "Is John active?"  → "John does not appear to be active in the system."
+    - "Does Sarah have any risk assessments?" → "Sarah has no risk assessments on record."
+
+    Return ONLY the final sentence. No preamble, no explanation."""
+
+        try:
+            response = await get_key_manager().generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.2,
+                    max_output_tokens=80,
+                ),
+            )
+            return response.text.strip()
+        except Exception:
+            return "Based on the available data, the answer to your question appears to be no."
+            
     async def _generate_mixed_summary(
         self,
         question: str,

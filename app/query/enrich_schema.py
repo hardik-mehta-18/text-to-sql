@@ -108,18 +108,12 @@ async def build_enriched_schema(
     resolved_user_table: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Returns (schema_str, clarification_msg).
-    - If clarification needed: (None, "please clarify...")
-    - If all good:             (schema_str, None)
+    Returns (schema_str, clarification_msg)
     """
     from app.training.indexer import Indexer
     indexer = Indexer()
-    def _safe(val):
-        return None if (val is None or str(val).strip().lower() == 'none') else val
 
-    effective_resolved_table = _safe(resolved_user_table) or _safe(plan.resolved_user_table)
-
-    logger.info(f"[enricher] effective_resolved_table='{effective_resolved_table}' (raw plan='{plan.resolved_user_table}', raw param='{resolved_user_table}')")
+    effective_resolved_table = resolved_user_table or plan.resolved_user_table
 
     needed = set()
     for t in plan.relevant_tables:
@@ -127,53 +121,17 @@ async def build_enriched_schema(
         for fk in t.foreign_keys:
             needed.add(fk['to_table'].lower())
 
-    logger.info(
-        f"[enricher] plan.resolved_user_table='{plan.resolved_user_table}' "
-        f"needed={needed}"
-    )
-    # ------------------------------------------------------------------
-    # KEY FIX: If the user already resolved which user-type table to use,
-    # strip every OTHER user-type table out of `needed` right now.
-    # This prevents the clarification check below from firing again,
-    # which was causing the infinite loop.
-    # ------------------------------------------------------------------
-    logger.info(f"[enricher] resolved_user_table check: '{effective_resolved_table}', needed before strip: {needed}")
-
+    # Drop competing user-type tables if we already resolved one
     if effective_resolved_table and effective_resolved_table != "__skip__":
-        resolved_normalized = _normalize_table_name(plan.resolved_user_table)
+        resolved_norm = _normalize_table_name(effective_resolved_table)
         tables_to_remove = {
             t for t in needed
             if _normalize_table_name(t) in USER_TYPE_TABLE_NORMALIZED
-            and _normalize_table_name(t) != resolved_normalized
+            and _normalize_table_name(t) != resolved_norm
         }
-        if tables_to_remove:
-            logger.info(
-                f"[enricher] Dropping competing user-type tables (resolved='{plan.resolved_user_table}'): {tables_to_remove}"
-            )
-            needed -= tables_to_remove
+        needed -= tables_to_remove
 
-    # ------------------------------------------------------------------
-    # Check: do multiple user-type tables remain? (only fires when
-    # resolved_user_table is NOT set, because we stripped the extras above)
-    # ------------------------------------------------------------------
-    user_tables_found = get_user_tables_in_enriched(needed)
-    logger.info(f"[enricher] User-type tables in enriched schema: {user_tables_found}")
-
-    if len(user_tables_found) > 1:
-        found_normalized = {_normalize_table_name(t) for t in user_tables_found}
-        matched_options = [
-            opt for opt in USER_TYPE_OPTIONS
-            if opt["table"] and _normalize_table_name(opt["table"]) in found_normalized
-        ]
-        clarification_msg = await build_multi_table_clarification_text(
-            question, matched_options
-        )
-        logger.info(f"[enricher] Clarification needed for: {matched_options}")
-        return None, clarification_msg
-
-    # ------------------------------------------------------------------
-    # Fetch table schemas from Qdrant and build the schema string
-    # ------------------------------------------------------------------
+    # Fetch real schemas
     try:
         scroll_results = indexer.client.scroll(
             collection_name=qdrant_collection,
@@ -182,30 +140,49 @@ async def build_enriched_schema(
         )
         report = [r.payload for r in scroll_results[0]]
     except Exception as e:
-        logger.warning(f"Failed to fetch schemas from Qdrant for {qdrant_collection}: {e}")
+        logger.warning(f"Qdrant scroll failed: {e}")
         report = []
 
     filtered = [t for t in report if t.get('table_name', '').lower() in needed]
 
-    lines = ['ENRICHED SCHEMA (relevant + FKs):']
+    lines = [
+        "ENRICHED SCHEMA — ONLY THESE TABLES AND COLUMNS EXIST",
+        "=============================================================",
+        "RULE: You are FORBIDDEN from using any column or table not listed below.",
+        "All column names are case-sensitive. Use them exactly as shown.\n"
+    ]
+
     for t in filtered:
-        s = t.get('schema_name', 'dbo')
-        name = f"{s}.{t['table_name']}"
-        lines.append(f'\nTABLE {name}')
-        lines.append(f"ROWS: {t['row_count']:,}")
-        lines.append('COLUMNS:')
+        table_full = f"{t.get('schema_name', 'dbo')}.{t['table_name']}"
+        lines.append(f"TABLE: {table_full}  (ROWS: {t['row_count']:,})")
+        lines.append("ALLOWED COLUMNS (exact case-sensitive names):")
+        
         for c in t['columns']:
             if isinstance(c, dict):
-                nullable_str = "NULL" if c.get('nullable') else "NOT NULL"
-                lines.append(f"  {c.get('name')} ({c.get('type')}) [{nullable_str}]")
+                name = c.get('name')
+                typ = c.get('type')
+                nullable = "NULL" if c.get('nullable') else "NOT NULL"
+                lines.append(f"   {name}  ({typ})  [{nullable}]")
             else:
-                lines.append(f"  {c}")
-        if 'foreign_keys' in t:
-            lines.append('FKs:')
-            for fk in t['foreign_keys']:
-                lines.append(f'  {fk}')
+                lines.append(f"   {c}")
 
-    return '\n'.join(lines), None
+        if 'foreign_keys' in t and t['foreign_keys']:
+            lines.append("FOREIGN KEYS (use these exact columns for JOINs):")
+            for fk in t['foreign_keys']:
+                lines.append(f"   {fk}")
+
+        lines.append("")  # blank line between tables
+
+    schema_str = "\n".join(lines)
+
+    # Clarification check (unchanged)
+    user_tables_found = get_user_tables_in_enriched(needed)
+    if len(user_tables_found) > 1:
+        matched_options = [opt for opt in USER_TYPE_OPTIONS if opt["table"] and _normalize_table_name(opt["table"]) in {_normalize_table_name(t) for t in user_tables_found}]
+        clarification_msg = await build_multi_table_clarification_text(question, matched_options)
+        return None, clarification_msg
+
+    return schema_str, None
 
 
 if __name__ == '__main__':

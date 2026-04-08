@@ -43,6 +43,9 @@ from app.query.planner import resolve_user_type_table
 from app.utils.pii_vault import pii_vault
 from app.history.user_history import save_user_history
 from app.history.gdrive_sync import start_gdrive_sync_job, stop_gdrive_sync_job
+from app.query.user_cache import ensure_cache, find_person
+import google.generativeai as genai
+from app.utils.gemini_key_manager import get_key_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -840,9 +843,9 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
     mem = get_session_memory(memory_key)
     conversation_context = mem.get_context_for_prompt()
  
-    max_retries = 3 
+    max_retries = 3
     last_error = ""
-    zero_rows_on_last_attempt = False
+    # zero_rows_on_last_attempt = False
     JSON_REMINDER = (
         "\n⚠️ MANDATORY: Your response MUST be a single valid JSON object. "
         'Return ONLY: {"sql": "...", "chat_response": "", "response_intent": "data", "reason": "..."}'
@@ -857,57 +860,28 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
     logger.info(f"[chronoplot] Corrected question: {question}")
  
     eng = connector.from_connection_string(ctx.connection_string)
- 
-    # ------------------------------------------------------------------
-    # Step 2 — Check if this message is a clarification answer from the user
-    #
-    # We store a "pending_clarification" dict in memory when we ask the user
-    # which user type they mean. On the very next turn we check for it.
-    # Structure stored: {"original_question": str, "entity_name": str}
-    # ------------------------------------------------------------------
-    pending_clarification = mem.get_pending_clarification()   # returns dict or None
+    
+    site_id_val = jwt_payload.get("SITE_ID")
+    logger.info(f"Site Ids : {site_id_val}")
+    if site_id_val:
+        try:
+            await ensure_cache(
+                session_id=body.session_id,
+                executor=executor,
+                engine=eng,
+                site_id=site_id_val,   # Works whether it's "guid1,guid2" or a list or single value
+            )
+        except Exception as cache_exc:
+            logger.warning(f"[chronoplot] User cache load failed (non-fatal): {cache_exc}")
+
     resolved_user_table: Optional[str] = None
-    effective_question = question
-    corrected_entity_name = None
-    if pending_clarification:
-        from app.query.planner import resolve_user_type_table
-        resolved_user_table = resolve_user_type_table(question)
-        entity_name = pending_clarification.get("entity_name", "the user")
+    resolved_last_name_col: Optional[str] = None
+    if corrected.has_user_reference and corrected.user_entity_name:
+        resolved_user_table, resolved_last_name_col = find_person(corrected.user_entity_name, body.session_id)
         if resolved_user_table:
-            original_q = pending_clarification["original_question"]
-            effective_question = f"{original_q} [include table: {resolved_user_table}]"
-            mem.clear_pending_clarification()
-            save_session_memory(memory_key)
-            corrected_has_user_reference = False
-            corrected_entity_name = entity_name             # ← preserved
+            logger.info(f"[chronoplot] ✅ Cache resolved '{corrected.user_entity_name}' → {resolved_user_table}")
         else:
-            mem.clear_pending_clarification()
-            save_session_memory(memory_key)
-            clarification_text = (
-                "Sorry, I didn't recognise that user type. "
-                "Please choose one of:\n"
-                + "\n".join(
-                    f"  {i+1}. {opt['label']}"
-                    for i, opt in enumerate(USER_TYPE_OPTIONS)
-                )
-            )
-            save_message(body.thread_id, "assistant", clarification_text)
-            save_user_history(
-                user_detail_id=user_detail_id,        # already in scope from _cp_authorize
-                question=question,
-                ai_response=clarification_text,
-                sql="",
-            )
-            return ChronoChatResponse(
-                mode="clarification",
-                text_summary=clarification_text,
-                page=1,
-                pages_total=1,
-            )
-    # else:
-        # corrected_has_user_reference = corrected.has_user_reference
-        # corrected_entity_name = corrected.user_entity_name
- 
+            logger.info(f"[chronoplot] No cache hit for '{corrected.user_entity_name}' → LLM will decide service/staff")
     # ------------------------------------------------------------------
     # Fallback: session filter keys
     # ------------------------------------------------------------------
@@ -931,26 +905,21 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
         ctx.common_filter_keys = ["site_id"]
  
     is_super_admin = (user_type == int(UserType.SuperAdmin))
-    effective_is_owner = getattr(ctx, "is_owner", False) or is_super_admin
  
     # ------------------------------------------------------------------
     # Step 3 — Main pipeline (with retry loop)
     # ------------------------------------------------------------------
     for attempt in range(max_retries):
         try:
-            resolved_entity_name: Optional[str] = None
-            if corrected_entity_name:
-                resolved_entity_name = corrected_entity_name
-            elif pending_clarification and resolved_user_table:
-                resolved_entity_name = pending_clarification.get("entity_name")
             plan = await planner.plan(
                 collection_name=ctx.qdrant_collection,
-                question=effective_question,
+                question=question,
                 dialect=ctx.dialect,
                 conversation_context=conversation_context,
                 resolved_user_table=resolved_user_table,
-                has_user_reference=False,
-                user_entity_name=corrected_entity_name,
+                resolved_last_name_column=resolved_last_name_col,   # NEW
+                has_user_reference=corrected.has_user_reference,
+                user_entity_name=corrected.user_entity_name,
             )
  
             # ── Clarification needed: user entity detected but type unknown ──
@@ -960,7 +929,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 # Store context in memory so we can pick it up on the next turn
                 mem.set_pending_clarification({
                     "original_question": question,
-                    "entity_name": plan.pending_entity_name or corrected_entity_name or "the user",
+                    "entity_name": plan.pending_entity_name or corrected.user_entity_name,
                 })
                 save_session_memory(memory_key)
  
@@ -994,7 +963,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
             if gen_result.explanation == "clarification_needed" and gen_result.chat_response:
                 mem.set_pending_clarification({
                     "original_question": question,
-                    "entity_name": corrected_entity_name or "the user",
+                    "entity_name": corrected.user_entity_name,
                 })
                 save_session_memory(memory_key)
                 save_message(body.thread_id, "assistant", gen_result.chat_response)
@@ -1081,16 +1050,71 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
             last_successful_sql = safe_sql
  
             result = await executor.execute(eng, safe_sql)
+            logger.info(f"Result Rows before : {result.rows}")
+            if not result.error and result.rows:
+                from app.enums.registry import reverse_map_enums
+                result.rows = reverse_map_enums(result.rows, plan.relevant_tables)
+                logger.info(f"Reversed rows: {result.rows}")
  
             if not result.rows and not result.error:
-                zero_rows_on_last_attempt = True
-                last_error = "Query returned 0 rows"
-                conversation_context += (
-                    f"\n[PREVIOUS SQL RETURNED 0 ROWS: {pre_filter_sql}\n"
-                    "Try relaxing filters or using broader LIKE patterns.]"
-                    + JSON_REMINDER
+                if gen_result.response_intent == "existence":
+                    existence_text = await formatter._generate_existence_negative(question)
+                    save_message(body.thread_id, "assistant", existence_text)
+                    save_user_history(
+                        user_detail_id=user_detail_id,
+                        question=question,
+                        ai_response=existence_text,
+                        sql=safe_sql,
+                    )
+                    mem.add_turn(ConversationTurn(
+                        question=question,
+                        sql_generated=safe_sql,
+                        result_summary="0 rows — existence check returned false",
+                        result_sample=[],
+                        services_used=[ctx.db_name],
+                        filters_applied=[],
+                    ))
+                    save_session_memory(memory_key)
+                    return ChronoChatResponse(
+                        mode="chat",
+                        text_summary=existence_text,
+                        sql_used=safe_sql,
+                        page=1,
+                        pages_total=1,
+                    )
+
+                # zero_rows_on_last_attempt = True
+                # last_error = "Query returned 0 rows"
+                # conversation_context += (
+                #     f"\n[PREVIOUS SQL RETURNED 0 ROWS: {pre_filter_sql}\n"
+                #     "Try relaxing filters or using broader LIKE patterns.]"
+                #     + JSON_REMINDER
+                # )
+                # continue
+                no_data_text = await formatter._humanize_no_data(question)
+                save_message(body.thread_id, "assistant", no_data_text)
+                save_user_history(
+                    user_detail_id=user_detail_id,
+                    question=question,
+                    ai_response=no_data_text,
+                    sql=safe_sql,
                 )
-                continue
+                mem.add_turn(ConversationTurn(
+                    question=question,
+                    sql_generated=safe_sql,
+                    result_summary="0 rows",
+                    result_sample=[],
+                    services_used=[ctx.db_name],
+                    filters_applied=[],
+                ))
+                save_session_memory(memory_key)
+                return ChronoChatResponse(
+                    mode="no_data",
+                    text_summary=no_data_text,
+                    sql_used=safe_sql,
+                    page=1,
+                    pages_total=1,
+                )
  
             if result.error:
                 last_error = result.error
@@ -1101,7 +1125,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 continue
             vault_map = mem.pii_vault_map  # reference to mem's dict
             safe_sample = pii_vault.anonymize_rows(result.rows[:3], vault_map)
-            zero_rows_on_last_attempt = False
+            # zero_rows_on_last_attempt = False
             formatted = await formatter.format(
                 question=question,
                 rows=result.rows,
@@ -1160,22 +1184,22 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
             logger.error(f"[chronoplot] Pipeline error (attempt {attempt + 1}): {exc}", exc_info=True)
             conversation_context += f"\n[ERROR: {last_error}. Try a different approach.]{JSON_REMINDER}"
  
-    if zero_rows_on_last_attempt:
-        no_data_text = await formatter._humanize_no_data(question)
-        save_message(body.thread_id, "assistant", no_data_text)
-        save_user_history(
-            user_detail_id=user_detail_id,        # already in scope from _cp_authorize
-            question=question,
-            ai_response=no_data_text,
-            sql=last_successful_sql,
-        )
-        return ChronoChatResponse(
-            mode="no_data",
-            text_summary=no_data_text,
-            sql_used=last_successful_sql,
-            page=1,
-            pages_total=1,
-        )
+    # if zero_rows_on_last_attempt:
+    #     no_data_text = await formatter._humanize_no_data(question)
+    #     save_message(body.thread_id, "assistant", no_data_text)
+    #     save_user_history(
+    #         user_detail_id=user_detail_id,        # already in scope from _cp_authorize
+    #         question=question,
+    #         ai_response=no_data_text,
+    #         sql=last_successful_sql,
+    #     )
+    #     return ChronoChatResponse(
+    #         mode="no_data",
+    #         text_summary=no_data_text,
+    #         sql_used=last_successful_sql,
+    #         page=1,
+    #         pages_total=1,
+    #     )
     no_data_text = await formatter._humanize_no_data(question)
     save_user_history(
         user_detail_id=user_detail_id,        # already in scope from _cp_authorize

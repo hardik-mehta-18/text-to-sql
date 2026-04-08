@@ -1,4 +1,7 @@
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
  
 # ---------------------------------------------------------------------------
 # Master registry
@@ -11,10 +14,6 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
         "Status": {
             "db_type": "int",
             "synonyms": {
-                "deactive": 0,
-                "deactivated": 0,
-                "inactive": 0,
-                "disabled": 0,
                 "active": 1,
                 "enabled": 1,
                 "maternityleave": 2,
@@ -26,7 +25,11 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "suspension": 4,
                 "suspended": 4,
                 "inactive_status": 5,
-                "inactive_user": 5
+                "inactive_user": 5,
+                "deactive": 5,
+                "deactivated": 5,
+                "inactive": 5,
+                "disabled": 5,
             }
         }
     },
@@ -47,7 +50,7 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
     },
  
     # ── BNR_UserDetails (Staff) ──────────────────────────────────────────────
-    "BNR_User_Details": {
+    "BNR_UserDetails": {
         "UserType": {
             "db_type": "int",
             "synonyms": {
@@ -260,7 +263,7 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "other": 5,
             },
         },
-        "PreparatorType": {
+        "PerpetratorType": {
             "db_type": "int",
             "synonyms": {
                 "service user": 1,
@@ -1683,3 +1686,59 @@ def build_enum_prompt_block(relevant_enums: dict) -> str:
     ]
  
     return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
+# Reverse map for output formatting
+# ---------------------------------------------------------------------------
+
+def reverse_map_enums(rows: List[Dict[str, Any]], relevant_tables: list) -> List[Dict[str, Any]]:
+    """
+    Given SQL result rows, converts integer enum values back to their 
+    human-readable string representations based on the relevant tables.
+    """
+    if not rows or not relevant_tables:
+        return rows
+
+    def normalize(val: str) -> str:
+        return str(val).lower().replace("_", "").replace(" ", "")
+
+    # Build a consolidated map from ENUM_REGISTRY for the columns present in result rows
+    reverse_map = {}
+    selected_normalized = {normalize(t.table_name) for t in relevant_tables}
+    
+    logger.info(f"[reverse_map] Selected tables (normalized): {selected_normalized}")
+
+    for table_name, columns in ENUM_REGISTRY.items():
+        norm_table = normalize(table_name)
+        if norm_table in selected_normalized:
+            logger.info(f"[reverse_map] Found match for table: {table_name}")
+            for col_name, meta in columns.items():
+                norm_col = normalize(col_name)
+                if norm_col not in reverse_map:
+                    reverse_map[norm_col] = {}
+                for synonym, val in meta["synonyms"].items():
+                    if val not in reverse_map[norm_col]:
+                        clean = synonym.replace('_', ' ').title()
+                        reverse_map[norm_col][val] = clean
+                        # Also store as string key for robustness
+                        reverse_map[norm_col][str(val)] = clean
+
+    if not reverse_map:
+        logger.info("[reverse_map] No enum columns found for the selected tables.")
+        return rows
+
+    logger.info(f"[reverse_map] Built reverse map for columns: {list(reverse_map.keys())}")
+
+    new_rows = []
+    for row in rows:
+        new_row = dict(row)
+        for k, v in new_row.items():
+            norm_k = normalize(k)
+            if norm_k in reverse_map:
+                # Try original value, then stringified version
+                if v in reverse_map[norm_k]:
+                    new_row[k] = reverse_map[norm_k][v]
+                elif str(v) in reverse_map[norm_k]:
+                    new_row[k] = reverse_map[norm_k][str(v)]
+        new_rows.append(new_row)
+    return new_rows
