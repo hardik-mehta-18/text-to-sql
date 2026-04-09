@@ -45,6 +45,7 @@ from app.history.user_history import save_user_history
 from app.history.gdrive_sync import start_gdrive_sync_job, stop_gdrive_sync_job
 from app.query.user_cache import ensure_cache, find_person
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 from app.utils.gemini_key_manager import get_key_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -841,7 +842,9 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
  
     memory_key = str(body.thread_id) if body.thread_id else body.session_id
     mem = get_session_memory(memory_key)
-    conversation_context = mem.get_context_for_prompt()
+    # conversation_context = mem.get_context_for_prompt()
+    conversation_context = ""
+
  
     max_retries = 3
     last_error = ""
@@ -876,6 +879,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
 
     resolved_user_table: Optional[str] = None
     resolved_last_name_col: Optional[str] = None
+    
     if corrected.has_user_reference and corrected.user_entity_name:
         resolved_user_table, resolved_last_name_col = find_person(corrected.user_entity_name, body.session_id)
         if resolved_user_table:
@@ -915,37 +919,13 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 collection_name=ctx.qdrant_collection,
                 question=question,
                 dialect=ctx.dialect,
-                conversation_context=conversation_context,
+                conversation_context="",
                 resolved_user_table=resolved_user_table,
                 resolved_last_name_column=resolved_last_name_col,   # NEW
                 has_user_reference=corrected.has_user_reference,
                 user_entity_name=corrected.user_entity_name,
             )
- 
-            # ── Clarification needed: user entity detected but type unknown ──
-            if plan.pending_user_type_clarification:
-                clarification_text = plan.clarification_questions[0]
- 
-                # Store context in memory so we can pick it up on the next turn
-                mem.set_pending_clarification({
-                    "original_question": question,
-                    "entity_name": plan.pending_entity_name or corrected.user_entity_name,
-                })
-                save_session_memory(memory_key)
- 
-                save_message(body.thread_id, "assistant", clarification_text)
-                save_user_history(
-                    user_detail_id=user_detail_id,        # already in scope from _cp_authorize
-                    question=question,
-                    ai_response=clarification_text,
-                    sql="",
-                )
-                return ChronoChatResponse(
-                    mode="clarification",
-                    text_summary=clarification_text,
-                    page=1,
-                    pages_total=1,
-                )
+
  
             # ── No tables found and still needs clarification ──
             if plan.needs_clarification and not plan.relevant_tables:
@@ -958,8 +938,9 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                     sql="",
                 )
                 return ChronoChatResponse(mode="empty", text_summary=no_data_text, page=1, pages_total=1)
- 
+            logger.info("After plan")
             gen_result = await generator.generate(plan, conversation_context, ctx.qdrant_collection)
+            logger.info(f"Generated Result: {gen_result}")
             if gen_result.chat_response and not gen_result.sql:
                 save_message(body.thread_id, "assistant", gen_result.chat_response)
                 save_user_history(
@@ -1161,8 +1142,19 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
  
         except HTTPException:
             raise
+        except (google_exceptions.PermissionDenied, google_exceptions.Unauthenticated) as exc:
+            # API Key issue! Give system down error as requested.
+            logger.error(f"[chronoplot] API Key issue detected: {exc}")
+            system_down_text = await formatter._humanize_system_down()
+            return ChronoChatResponse(mode="empty", text_summary=system_down_text)
         except Exception as exc:
             last_error = str(exc)
+            # Check for other API-key-like signals in string form
+            if any(signal in last_error.lower() for signal in ["api key", "apikey", "quota exceeded", "all gemini api keys have hit their quota"]):
+                logger.error(f"[chronoplot] API Key/Quota issue detected (from string): {last_error}")
+                system_down_text = await formatter._humanize_system_down()
+                return ChronoChatResponse(mode="empty", text_summary=system_down_text)
+
             logger.error(f"[chronoplot] Pipeline error (attempt {attempt + 1}): {exc}", exc_info=True)
             conversation_context += f"\n[ERROR: {last_error}. Try a different approach.]{JSON_REMINDER}"
  

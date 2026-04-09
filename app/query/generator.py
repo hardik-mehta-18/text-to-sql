@@ -168,20 +168,11 @@ class SQLGenerator:
         session_id: str = '07acccf1-21fb-47d4-bf90-aaa83f047cfd',
     ) -> GenerationResult:
         # schema_context = build_enriched_schema(plan, session_id)
-        schema, clarification = await build_enriched_schema(
-            plan,
+        schema = await build_enriched_schema(
+            plan=plan,
             qdrant_collection=session_id,
-            question=plan.question,
-            resolved_user_table=plan.resolved_user_table,  # ← explicit pass
+            resolved_user_table=plan.resolved_user_table
         )
-
-        if clarification:
-            return GenerationResult(
-                sql="",
-                explanation="clarification_needed",
-                chat_response=clarification,   # reuse chat_response field
-            )
-
         schema_context = schema
         history_block = f"\n{conversation_context}\n" if conversation_context else ""
         logger.info(f"Hstory block for SQL generation (length {len(history_block)} chars): {history_block}")
@@ -196,6 +187,13 @@ class SQLGenerator:
         relevant_enums = get_relevant_enums(plan.relevant_tables)
         enum_block = build_enum_prompt_block(relevant_enums)
         logger.info(f"Enum block for SQL generation (length {len(enum_block)} chars): {enum_block}")
+        ENUM_PRIORITY = """
+            ENUM PRIORITY RULE (CRITICAL):
+            When the user says "suspended", ALWAYS map to 4.
+            When the user says "inactive", "deactivated", or "disabled", map to 5.
+            Never confuse "suspended" with "inactive".
+        """
+
         _ANTI_HALLUCINATION_BLOCK = """
             =====================
             ANTI-HALLUCINATION — SCHEMA ENFORCEMENT (HIGHEST PRIORITY — READ FIRST)
@@ -663,6 +661,7 @@ class SQLGenerator:
                 "ENUM MATCHING: normalize both user input and synonym keys to lowercase, "
                 "remove underscores/hyphens, then match. Use the INTEGER for that synonym in WHERE."
             )
+            sections.append(ENUM_PRIORITY)
 
         sections.append(
             f"=====================\nUSER QUESTION\n=====================\n"

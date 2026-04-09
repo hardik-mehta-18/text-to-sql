@@ -95,6 +95,48 @@ def _parse_and_format_date(value: Any) -> Any:
         return value
 
 
+def _clean_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    - Converts boolean values to Yes/No
+    (ID removal is handled by _humanize_and_filter_columns_dynamic via LLM)
+    """
+    cleaned_rows = []
+    for row in rows:
+        new_row = {}
+        for key, value in row.items():
+            if isinstance(value, bool):
+                new_row[key] = "Yes" if value else "No"
+            else:
+                new_row[key] = value
+        cleaned_rows.append(new_row)
+    return cleaned_rows
+
+
+def _clean_text_summary(text: str) -> str:
+    """
+    - Removes UUID-like patterns
+    - Converts true/false words to Yes/No
+    """
+    if not text:
+        return text
+
+    # ❌ Remove UUIDs (like 0700F872-E8EF-...)
+    text = re.sub(
+        r'\b[0-9a-fA-F]{8}-[0-9a-fA-F\-]{27,}\b',
+        '',
+        text
+    )
+
+    # 🔁 Convert true/false → Yes/No (case insensitive)
+    text = re.sub(r'\btrue\b', 'Yes', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bfalse\b', 'No', text, flags=re.IGNORECASE)
+
+    # Cleanup extra spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+
 def _format_dates_in_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Walk every cell in every row and apply date formatting where applicable.
@@ -166,18 +208,23 @@ class SmartFormatter:
         # Normalise any date/datetime cell to dd-mm-yyyy before anything else
         rows = _format_dates_in_rows(rows)
 
+        rows = _clean_rows(rows)
+
         # Apply PII Pseudonymization mapping
         masked_rows = pii_vault.anonymize_rows(rows, vault_map)
+
         logger.info(f"masked_rows: {masked_rows}")
         # Let the LLM dynamically decide which columns to show and how to name them
         # Pass masked_rows so Gemini doesn't see real PII
         columns, masked_rows_filtered = await self._humanize_and_filter_columns_dynamic(columns, masked_rows, question)
-
+        
         # Existence intent → just confirm yes/no with brief description, no table dump
         if response_intent == "existence":
             summary = await self._humanize_existence(question, masked_rows_filtered, columns, total)
             logger.info(f"Existence summary before de-anonymization: {summary}")
             summary = pii_vault.deanonymize(summary, vault_map)
+            logger.info(f"Existance Summary : {summary}")
+            summary = _clean_text_summary(summary)
             logger.info(f"Existence summary: {summary}")
             return FormattedResponse(
                 mode="conversational",
@@ -398,6 +445,11 @@ Do NOT mention "SQL", "database errors", "max retries", "internal error", or any
         )
 
         return await self._gemini_call(prompt, fallback=fallback)
+
+    async def _humanize_system_down(self) -> str:
+        """Generate a friendly response when the AI service is unavailable (API key issues, quota, etc)."""
+        # Note: We don't use Gemini here because this is called when Gemini is likely DOWN.
+        return "I'm sorry, but my AI services are currently unavailable due to system maintenance or technical issues. Please try again in a few minutes."
 
     async def _humanize_rows(self, question: str, rows: List[Dict], columns: List[str]) -> str:
         rows_text = "\n".join(

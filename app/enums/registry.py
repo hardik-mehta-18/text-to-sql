@@ -72,21 +72,20 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
             "synonyms": {
                 "active": 1,
                 "enabled": 1,
-                "maternityleave": 2,
-                "maternity_leave": 2,
                 "maternity leave": 2,
-                "longtermleave": 3,
-                "long_term_leave": 3,
+                "maternityleave": 2,
+                "on maternity leave": 2,
                 "long term leave": 3,
+                "longtermleave": 3,
                 "suspension": 4,
                 "suspended": 4,
-                "inactive_status": 5,
-                "inactive_user": 5,
-                "inactive account": 5,
-                "deactive": 5,
-                "deactivated": 5,
+                "on suspension": 4,
                 "inactive": 5,
+                "deactivated": 5,
                 "disabled": 5,
+                "deactive": 5,
+                "inactive status": 5,
+                "inactive user": 5,
             },
         },
     },
@@ -1621,70 +1620,56 @@ def get_relevant_enums(relevant_tables: list) -> dict:
 # ---------------------------------------------------------------------------
  
 def build_enum_prompt_block(relevant_enums: dict) -> str:
-    """
-    Formats the filtered enum map into a clean prompt block for the generator.
-    Returns empty string if no relevant enums found (no injection needed).
-    """
     if not relevant_enums:
         return ""
- 
+
     lines = [
         "=====================",
         "ENUM VALUE MAP — INTEGER VALUES STORED IN DB",
         "=====================",
         "These columns store INTEGER values, NOT strings.",
-        "Match the user's natural language to the exact integer shown below.",
-        "ALWAYS use = or IN with the integer. NEVER use LIKE. NEVER use the text label.\n",
+        "You MUST use the exact integer shown below. NEVER use text labels in SQL.\n",
     ]
- 
+
     for table, columns in relevant_enums.items():
         lines.append(f"Table: {table}")
         for col, meta in columns.items():
             lines.append(f"  Column: {col}  [{meta['db_type']}]")
-            # Group synonyms by their integer value for clean display
-            # Normalize keys: lowercase + replace underscores with spaces
+            
+            # Group by value for clarity
             value_to_synonyms: Dict[int, List[str]] = {}
             for synonym, value in meta["synonyms"].items():
-                normalized = synonym.lower().replace("_", " ")
+                normalized = synonym.lower().strip().replace("_", " ")
                 value_to_synonyms.setdefault(value, []).append(normalized)
-            # Deduplicate after normalization
+            
             for value in sorted(value_to_synonyms.keys()):
-                seen = set()
-                unique_synonyms = []
-                for s in value_to_synonyms[value]:
-                    if s not in seen:
-                        seen.add(s)
-                        unique_synonyms.append(s)
-                syn_str = ", ".join(f'"{s}"' for s in unique_synonyms)
-                lines.append(f"    {syn_str}  →  {value}")
+                unique_syns = sorted(set(value_to_synonyms[value]))
+                syn_str = ", ".join(f'"{s}"' for s in unique_syns)
+                lines.append(f"    → {value} : {syn_str}")
+        
         lines.append("")
- 
+
     lines += [
-        "RULES:",
-        "- ALWAYS use the integer value, NEVER the text label",
-        "- Single match  → use =   e.g. WHERE Status = 1",
-        "- Multi match   → use IN  e.g. WHERE PersonAffected IN (1, 2)",
-        "- NEVER write WHERE Status = 'Active'        ← string value — WRONG",
-        "- NEVER write WHERE Status LIKE '%active%'   ← LIKE on enum — WRONG",
-        "- ALWAYS write WHERE Status = 1              ← integer value — CORRECT",
-        "- If user's word has no match in the map above, skip that filter entirely",
-        "- NEVER generate a filter with an empty or guessed value",
+        "ENUM MATCHING RULES (FOLLOW EXACTLY — HIGHEST PRIORITY):",
+        "1. Normalize user input: lowercase + replace underscores/hyphens with spaces.",
+        "2. Find the synonym that BEST and MOST SPECIFICALLY matches the user's word.",
+        "3. Prefer longer/more specific matches over short ones.",
+        "   Example: 'suspended' → matches 'suspended' (4) better than 'inactive' (5)",
+        "   Example: 'maternity leave' → matches 'maternity leave' (2), NOT 'inactive'",
+        "4. If multiple possible matches, choose the one with the exact word.",
+        "5. Use = or IN with the INTEGER only.",
         "",
-        "⛔ CRITICAL — ENUM COLUMNS ARE NOT FOREIGN KEYS:",
-        "- NEVER use an enum column in a JOIN condition",
-        "- Example: PersonAffected stores 1=Service User, 2=Staff — it is NOT a FK to any person table",
-        "- WRONG: JOIN BNR_Service_User t2 ON t1.PersonAffected = t2.Id",
-        "- RIGHT:  WHERE t1.PersonAffected = 1  (use as a WHERE filter only)",
+        "EXAMPLES:",
+        "- User says 'suspended user'     → Status = 4",
+        "- User says 'inactive user'      → Status = 5",
+        "- User says 'on maternity leave' → Status = 2",
+        "- User says 'active staff'       → Status = 1",
         "",
-        "COMBINING ENUM FILTER WITH PERSON NAME FILTER:",
-        "- If the user mentions a person type (e.g. 'service user') AND a person name (e.g. 'Vikas Kohli'):",
-        "  Step 1 → Add enum WHERE filter: WHERE t1.PersonAffected = 1",
-        "  Step 2 → JOIN the resolved person table using the ACTUAL FK column from schema",
-        "  Step 3 → Add name filter on the joined table: AND t2.FirstName LIKE '%Vikas%'",
-        "- The enum filter and the name JOIN are two separate things — never confuse them",
+        "⛔ NEVER guess or use a different number.",
+        "⛔ If no good synonym match → DO NOT add any filter for that column.",
         "=====================",
     ]
- 
+
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------

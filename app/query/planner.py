@@ -62,11 +62,9 @@ class QueryPlan:
     question: str
     confidence: float
     needs_clarification: bool
-    clarification_questions: List[str]
     relevant_tables: List[TableContext]
     dialect: str
     # Set when we need the user to clarify which user type a named person belongs to
-    pending_user_type_clarification: bool = False
     # The name we detected (e.g. "Louis") — passed back so the API can store it
     pending_entity_name: Optional[str] = None
     resolved_user_table: Optional[str] = None
@@ -172,6 +170,39 @@ def resolve_user_type_table(user_type_answer: str) -> Optional[str]:
             return option["table"] if option["table"] else "__skip__"
     return None
 
+def _resolve_user_type_from_question(question: str) -> Optional[str]:
+    """
+    Check if the question already contains a clear user-type signal.
+    Returns the resolved table name, or None if ambiguous.
+    """
+    question_lower = question.lower()
+    
+    # Score each option by keyword matches
+    scores = []
+    for option in USER_TYPE_OPTIONS:
+        if not option["table"]:
+            continue
+        score = sum(1 for kw in option["keywords"] if kw in question_lower)
+        if score > 0:
+            scores.append((score, option))
+    
+    if not scores:
+        return None
+    
+    # Sort by score descending
+    scores.sort(key=lambda x: x[0], reverse=True)
+    
+    # Only auto-resolve if there's a clear winner (no tie at top)
+    top_score, top_option = scores[0]
+    if len(scores) == 1 or scores[0][0] > scores[1][0]:
+        logger.info(
+            f"[planner] Question keyword match resolved user type: "
+            f"'{top_option['label']}' → {top_option['table']} (score={top_score})"
+        )
+        return top_option["table"]
+    
+    # Tie — still ambiguous
+    return None
 
 class QueryPlanner:
     """Determines which tables are needed to answer a user question."""
@@ -197,6 +228,12 @@ class QueryPlanner:
         user_opted_out = resolved_user_table == "__skip__"
         effective_resolved_table = None if user_opted_out else resolved_user_table
         logger.info(f"effective_resolved_table: {effective_resolved_table}")
+        if not effective_resolved_table:
+            keyword_resolved = _resolve_user_type_from_question(question)
+            logger.info(f"[planner] Keyword resolution result: {keyword_resolved}")
+            if keyword_resolved:
+                effective_resolved_table = keyword_resolved
+                logger.info(f"[planner] User type resolved from question keywords → {effective_resolved_table}")
 
         # ------------------------------------------------------------------
         # 2. Enrich the question with the resolved user table hint (if any)
@@ -225,10 +262,6 @@ class QueryPlanner:
                 question=question,
                 confidence=0.0,
                 needs_clarification=True,
-                clarification_questions=[
-                    "I couldn't find relevant tables for your question.",
-                    "Could you rephrase or provide more details?",
-                ],
                 relevant_tables=[],
                 dialect=dialect,
                 resolved_user_table=resolved_user_table,
@@ -262,7 +295,7 @@ class QueryPlanner:
         schema_context = self._build_schema_context(candidate_tables)
 
         analysis = await self._analyze_with_gemini(
-            effective_question, schema_context, conversation_context
+            effective_question, schema_context, conversation_context, forced_table=effective_resolved_table
         )
 
         selected_names = {n.lower() for n in analysis.get("relevant_tables", [])}
@@ -271,6 +304,7 @@ class QueryPlanner:
         if effective_resolved_table:
             selected_names.add(effective_resolved_table.lower())
             selected_names.add(_normalize_table_name(effective_resolved_table))
+            logger.info(f"[planner] Forced '{effective_resolved_table}' into selected_names")
 
         relevant = []
         for t in candidate_tables:
@@ -278,23 +312,24 @@ class QueryPlanner:
             name_norm = _normalize_table_name(t.table_name)
             if name_low in selected_names or name_norm in selected_names:
                 relevant.append(t)
+                logger.info(f"[planner] Selected table: {t.table_name}")
 
         if not relevant:
             logger.warning("[planner] No tables matched, falling back to top candidates.")
             relevant = candidate_tables[:5]
 
         confidence = float(analysis.get("confidence", 0.6))
+        logger.info(f"Confidance : {confidence}")
         needs_clarification = confidence < self.settings.query.confidence_threshold
-
+        logger.info(f"Needs Clarifications : {needs_clarification}")
         return QueryPlan(
             question=question,
             confidence=confidence,
             needs_clarification=needs_clarification,
-            clarification_questions=analysis.get("clarification_questions", []),
             relevant_tables=relevant,
             dialect=dialect,
-            resolved_user_table=resolved_user_table,
-            resolved_last_name_column=resolved_last_name_column,   # ← Pass it down
+            resolved_user_table=resolved_user_table,          # ← original (not effective)
+            resolved_last_name_column=resolved_last_name_column,
             user_entity_name=user_entity_name,
         )
 
@@ -333,20 +368,32 @@ class QueryPlanner:
         question: str,
         schema_context: str,
         history: str,
+        forced_table: Optional[str] = None,
     ) -> dict:
+        forced_block = ""
+        if forced_table:
+            forced_block = f"""
+    ⚠️ MANDATORY TABLE OVERRIDE:
+    The system has already resolved that the person mentioned in the question is from table: "{forced_table}".
+    You MUST include "{forced_table}" in relevant_tables.
+    Do NOT substitute it with any other user/person table.
+    """
+
         history_block = f"\n{history}\n" if history else ""
         prompt = f'''You are a expert database query planner. Your job is to select the EXACT table names from the AVAILABLE TABLES list that are required to answer the user's QUESTION.
         
 {schema_context}
 {history_block}
+{forced_block}
 QUESTION: {question}
 
 RULES for Table Selection:
-1. STATUS/ACCOUNT QUERIES: If the user asks about a person's "status", "active/inactive", "employment", "maternity leave", "login", or "account details", ALWAYS include BNR_UserDetails.
-2. INCIDENT QUERIES: If the user asks about "incidents", "what happened", or "safety logs", ALWAYS include BNR_Incidents.
-3. SEARCHING FOR PEOPLE: If searching for a person by name, you may need BNR_Service_User (for care clients) or BNR_UserDetails (for staff). If unsure, include BOTH.
-4. CARE PROFILE: If the user asks about health, diagnosis, allergies, or "about me", include BNR_AboutMeServiceUser.
-5. SITES: If asking about buildings, locations, or sites, include BNR_Sites.
+1. SERVICE USERS: If the question mentions "service user", "service client", "client", or asks for "active service users", "list of service users", etc., prioritize BNR_Service_User. "Active" in this context usually refers to the service user's own active/inactive flag.
+2. STAFF / PERSONNEL: Only include BNR_UserDetails when the question is clearly about staff, operators, employees, support staff, managers, or uses words like "staff", "employee", "maternity leave", "employment status", "operator".
+3. When both "service user" and "active" appear together, default to BNR_Service_User unless the question also mentions staff/employee keywords.
+4. INCIDENT QUERIES: If the user asks about "incidents", "what happened", or "safety logs", ALWAYS include BNR_Incidents.
+5. SEARCHING FOR PEOPLE: If searching for a person by name without clear type, you may need both BNR_Service_User and BNR_UserDetails. But if "service user" is explicitly mentioned, prefer BNR_Service_User.
+6. CARE PROFILE: Health, diagnosis, allergies → BNR_AboutMeServiceUser.
 
 OUTPUT FORMAT:
 Return a JSON object ONLY.
@@ -354,7 +401,6 @@ Return a JSON object ONLY.
 {{
   "confidence": 0.95,
   "needs_clarification": false,
-  "clarification_questions": [],
   "relevant_tables": ["BNR_UserDetails", "BNR_Incidents"],
   "reasoning": "User asked for incident status which requires both tables."
 }}
@@ -387,7 +433,6 @@ MANDATORY:
             return {
                 "confidence": 0.5,
                 "needs_clarification": True,
-                "clarification_questions": ["Could you rephrase your question?"],
                 "relevant_tables": [],
             }
         except Exception as e:
@@ -420,7 +465,6 @@ MANDATORY:
             question=question,
             confidence=0.0,
             needs_clarification=True,
-            clarification_questions=[msg],
             relevant_tables=[],
             dialect=dialect,
         )
