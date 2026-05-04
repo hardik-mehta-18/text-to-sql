@@ -240,7 +240,9 @@ def verify_password(password: str, hashed: str) -> bool:
     except ValueError:
         return False
 
-APP_DATABASE_URL = os.getenv("APP_DATABASE_URL", "sqlite:///app_metadata.db")
+APP_DATABASE_URL = os.getenv("APP_DATABASE_URL")
+if not APP_DATABASE_URL:
+    raise RuntimeError("APP_DATABASE_URL environment variable is not set.")
 
 def init_app_db():
     engine_args = {}
