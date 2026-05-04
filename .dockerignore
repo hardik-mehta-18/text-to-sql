@@ -2,11 +2,14 @@
 __pycache__
 *.pyc
 .env
+.env.*
 credentials.json
 venv/
 .venv
-uploads/session_store/
-uploads/cache/
+uploads/
 frontend/node_modules
-frontend/dist
 .claude/
+.github/
+*.md
+pyrightconfig.json
+qa_runner.py
