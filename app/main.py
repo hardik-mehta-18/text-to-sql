@@ -277,6 +277,311 @@ async def root():
     return FileResponse("frontend/dist/index.html")
 
 
+@app.post("/api/db/connect", response_model=ConnectResponse)
+async def connect_db(
+    request: Request,
+    source_type: str = Form(..., description="upload or connection_string"),
+    connection_string: Optional[str] = Form(None),
+    db_file: Optional[UploadFile] = File(None),
+):
+    """Connect a database. Accepts file upload (SQLite) or connection string."""
+    session_id = str(uuid.uuid4())
+    print(connection_string)
+    print(db_file)
+    print(source_type)
+    try:
+        if source_type == "upload":
+            if not db_file:
+                raise HTTPException(status_code=400, detail="No file uploaded.")
+            file_bytes = await db_file.read()
+            engine = connector.from_upload(session_id, file_bytes, db_file.filename or "db.sqlite")
+            dialect = "sqlite"
+            db_name = db_file.filename or "uploaded_database"
+            db_key = hashlib.sha256(file_bytes).hexdigest()
+        elif source_type == "connection_string":
+            if not connection_string:
+                raise HTTPException(status_code=400, detail="connection_string is required.")
+            engine = connector.from_connection_string(connection_string)
+            dialect = connector._detect_dialect(connection_string)
+            db_name = _extract_db_name(connection_string)
+            db_key = hashlib.sha256(connection_string.encode()).hexdigest()
+        else:
+            raise HTTPException(status_code=400, detail="type must be 'upload' or 'connection_string'.")
+
+    except (ConnectionError, UnsupportedDialectError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    ctx = SessionContext(
+        session_id=session_id,
+        engine=engine,
+        dialect=dialect,
+        db_name=db_name,
+        source_type=source_type,
+        table_count=0,
+        qdrant_collection=f"{settings.qdrant.collection_prefix}_{db_key}",
+        db_key=db_key,
+        connection_string=connection_string,
+        is_owner=True
+    )
+    await get_session_store().register(ctx)
+    save_session(ctx)
+    return ConnectResponse(
+        session_id=session_id,
+        dialect=dialect,
+        db_name=db_name,
+        message="Connected. Call /api/db/train/{session_id} to start indexing.",
+    )
+
+
+@app.get("/api/db/train/{session_id}")
+async def train_db(session_id: str):
+    """Stream training progress via Server-Sent Events."""
+    ctx = await get_session_store().get(session_id)
+    if not ctx:
+        persisted = load_session(session_id)
+        if not persisted:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+        
+        # Rebuild a minimal SessionContext (engine cannot be recovered for upload)
+        ctx = SessionContext(
+
+            session_id=persisted["session_id"],
+            engine=None,  # Engine is gone, cannot run queries, but schema/Qdrant works
+            dialect=persisted["dialect"],
+            db_name=persisted["db_name"],
+            source_type="unknown",
+            table_count=0,
+            qdrant_collection=persisted["qdrant_collection"],
+            db_key=persisted["db_key"],
+            training_complete=persisted.get("training_complete", True),
+            connection_string=persisted.get("connection_string"),
+            common_filter_keys=persisted.get("common_filter_keys", []),
+            session_filter_values=persisted.get("session_filter_values", {}),
+            is_owner=persisted.get("is_owner", False)
+
+        )
+
+    pipeline = TrainingPipeline()
+
+    logger.info("Out from Training Pipeline")
+    async def event_stream():
+        # Send immediate keepalive so client knows connection is open
+        # (schema extraction on large DBs can take > 2 min before first yield)
+        yield ": keepalive\n\n"
+        try:
+            cached_data = pipeline._load_schema_cache(ctx.db_key) if ctx.db_key else None
+            if cached_data is not None:
+                logger.info("If call")
+                tables, descriptions = cached_data
+                logger.info(tables)
+
+            else:
+                tables = await pipeline.extract_only(session_id, ctx.engine)
+
+            ctx.tables = tables
+            await get_session_store().register(ctx)
+
+            data = {
+                "step": "tables_ready",
+                "progress": 100,
+                "tables_done": len(tables),
+                "tables_total": len(tables),
+                "message": "Tables extracted. Please provide descriptions.",
+                "error": ""
+            }
+
+            yield f"data: {json.dumps(data)}\n\n"
+
+        except Exception as e:
+            error_data = {
+                "step": "error",
+                "message": str(e)
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/session/{session_id}/schema", response_model=List[SchemaTable])
+async def get_schema(session_id: str):
+    """Return list of indexed tables for the session sidebar."""
+    from app.training.indexer import Indexer
+    ctx = await get_session_store().get(session_id)
+    if not ctx:
+        persisted = load_session(session_id)
+        if not persisted:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+        
+        # Rebuild a minimal SessionContext (engine cannot be recovered for upload)
+        ctx = SessionContext(
+            session_id=persisted["session_id"],
+            engine=None,  # Engine is gone, cannot run queries, but schema/Qdrant works
+            dialect=persisted["dialect"],
+            db_name=persisted["db_name"],
+            source_type="unknown",
+            table_count=0,
+            qdrant_collection=persisted["qdrant_collection"],
+            db_key=persisted["db_key"],
+            training_complete=persisted.get("training_complete", True),
+            connection_string=persisted.get("connection_string"),
+            common_filter_keys=persisted.get("common_filter_keys", []),
+            session_filter_values=persisted.get("session_filter_values", {}),
+            is_owner=persisted.get("is_owner", False)
+
+        )
+    logger.info(f"CTX : {ctx}")
+    indexer = Indexer()
+    try:
+        # Search with a broad query to get all table payloads
+        results = await indexer.search(ctx.qdrant_collection, "list all tables", top_k=200)
+        return [
+            SchemaTable(
+                table_name=r.get("table_name", ""),
+                schema_name=r.get("schema_name"),
+                description=r.get("description", ""),
+                row_count=r.get("row_count", 0),
+                column_count=len(r.get("columns", [])),
+            )
+            for r in results
+        ]
+    except Exception as e:
+        logger.error(f"Schema fetch error: {e}", exc_info=True)
+        raise DBError("Unable to retrieve database schema. Please check your connection and try again.")
+
+
+@app.get("/api/db/tables/{session_id}")
+async def get_tables(session_id: str):
+    ctx = await get_session_store().get(session_id)
+
+    if not ctx:
+        raise HTTPException(404, "Session not found")
+
+    pipeline = TrainingPipeline()
+
+    tables = await pipeline.extract_only(session_id, ctx.engine)
+
+    # Save tables temporarily (important)
+    ctx.tables = tables  
+
+    return [
+        {
+            "table_name": t.table_name,
+            "schema_name": t.schema_name,
+            "row_count": t.row_count,
+            "columns": [c.name for c in t.columns]
+        }
+        for t in tables
+    ]
+
+
+@app.post("/api/db/train-with-input")
+async def train_with_user_input(body: TrainWithUserInputRequest):
+    ctx = await get_session_store().get(body.session_id)
+    logger.info(ctx)
+    if not ctx:
+        raise HTTPException(404, "Session not found")
+
+    if not hasattr(ctx, "tables"):
+        raise HTTPException(400, "Tables not loaded. Call /tables first.")
+
+    user_desc_map = {
+        t.table_name: t.user_description
+        for t in body.tables
+        if t.user_description
+    }
+
+    pipeline = TrainingPipeline()
+
+    async def event_stream():
+        async for progress in pipeline.run_with_user_input(
+            session_id=body.session_id,
+            tables=ctx.tables,
+            user_descs=user_desc_map,
+            dialect=ctx.dialect,
+            qdrant_collection=ctx.qdrant_collection,
+            db_key=ctx.db_key
+        ):
+            yield f"data: {json.dumps(progress.__dict__)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/session/{session_id}/filter-keys")
+async def save_filter_keys(session_id: str, body: FilterKeysRequest):
+    ctx = await get_session_store().get(session_id)
+    if not ctx:
+        raise HTTPException(404, "Session not found")
+    ctx.common_filter_keys = body.keys
+    save_session(ctx)
+    return {"message": "Filter keys saved successfully"}
+
+
+@app.post("/api/session/{session_id}/filter-values")
+async def save_filter_values(session_id: str, body: FilterValuesRequest):
+    logger.info(f"POST /api/session/{session_id}/filter-values: {body.values}")
+    ctx = await get_session_store().get(session_id)
+    if not ctx:
+        logger.warning(f"Session {session_id} not in memory, attempting to load from disk")
+        persisted = load_session(session_id)
+        if not persisted:
+            raise HTTPException(404, "Session not found")
+        ctx = SessionContext(**persisted)
+        ctx.session_filter_values = body.values
+        await get_session_store().register(ctx)
+        save_session(ctx)
+    else:
+        ctx.session_filter_values = body.values
+        save_session(ctx)
+    logger.info(f"Saved session_filter_values for {session_id}: {ctx.session_filter_values}")
+    return {"message": "Filter values saved for this session"}
+
+
+@app.get("/api/session/{session_id}/schema-report")
+async def get_schema_report(session_id: str):
+    """Return the full schema + AI description report as JSON.
+
+    Written to uploads/{session_id}/schema_report.json after training,
+    but falls back to Qdrant for loaded sessions.
+    """
+    import pathlib, json as _json
+    report_path = pathlib.Path(settings.uploads.dir) / session_id / "schema_report.json"
+    if report_path.exists():
+        try:
+            data = _json.loads(report_path.read_text(encoding="utf-8"))
+            return data
+        except Exception as e:
+            logger.warning(f"Error reading schema_report.json: {e}")
+            pass
+            
+    # Fallback to Qdrant if file doesn't exist (e.g., loaded model)
+    ctx = await get_session_store().get(session_id)
+    if not ctx:
+        ctx_data = load_session(session_id)
+        if ctx_data:
+            ctx = SessionContext(**ctx_data)
+            
+    if ctx and ctx.qdrant_collection:
+        from app.training.indexer import Indexer
+        indexer = Indexer()
+        try:
+            scroll_results = indexer.client.scroll(
+                collection_name=ctx.qdrant_collection,
+                limit=500,
+                with_payload=True
+            )
+            return [r.payload for r in scroll_results[0]]
+        except Exception as e:
+            logger.error(f"Failed to fetch schema report from Qdrant: {e}")
+            
+    raise HTTPException(
+        status_code=404,
+        detail="Schema report not found. Training may not have completed yet.",
+    )
+
 @app.post("/api/auth/register")
 def register(body: RegisterRequest):
     db = AppDBSession()
