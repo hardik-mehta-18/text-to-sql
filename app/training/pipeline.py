@@ -319,10 +319,8 @@ import json
 import logging
 import pathlib
 from dataclasses import dataclass
-from typing import AsyncGenerator, List
-
+from typing import AsyncGenerator, List, Optional
 from sqlalchemy.engine import Engine
-
 from app.config import get_settings
 from app.training.schema_extractor import SchemaExtractor, TableInfo
 from app.training.describer import Describer
@@ -377,12 +375,13 @@ class TrainingPipeline:
         user_descs: dict[str, str],
         dialect: str,
         db_key: str,
-        qdrant_collection: str
+        qdrant_collection: str,
+        force_reindex: bool = False,
     ) -> AsyncGenerator[TrainingProgress, None]:
         cached_data = self._load_schema_cache(db_key) if db_key else None
         total = len(tables)
         collection_exists = self.indexer.collection_exists(qdrant_collection)
-        if cached_data is not None and collection_exists:
+        if cached_data is not None and collection_exists and not force_reindex:
             logger.info("Skipping Qdrant indexing — cache hit and collection already exists")
             _, descriptions = cached_data
             yield TrainingProgress(
@@ -453,6 +452,159 @@ class TrainingPipeline:
             message=f"Ready! {total} tables indexed.",
         )
 
+    async def run_partial_update(
+        self,
+        session_id: str,
+        tables_to_update: List[TableInfo],
+        user_descs: dict,
+        dialect: str,
+        db_key: str,
+        qdrant_collection: str,
+    ) -> AsyncGenerator[TrainingProgress, None]:
+        """
+        Re-embed a subset of tables without touching the rest of the collection.
+ 
+        Flow:
+          1. Delete existing Qdrant points for these tables (by table_name filter)
+          2. Generate fresh AI descriptions for only these tables
+          3. Upsert the new vectors (indexer only creates collection if missing)
+          4. Merge new descriptions back into the full cache
+        """
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+ 
+        total = len(tables_to_update)
+        table_names = [t.table_name for t in tables_to_update]
+ 
+        yield TrainingProgress(
+            step="cleaning",
+            progress=5,
+            tables_done=0,
+            tables_total=total,
+            message=f"Removing old vectors for {total} table(s)...",
+        )
+ 
+        # Step 1 — Delete existing points for only these tables
+        try:
+            self.indexer.client.delete(
+                collection_name=qdrant_collection,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="table_name",
+                            match=MatchAny(any=table_names),
+                        )
+                    ]
+                ),
+            )
+            logger.info(f"[partial_update] Deleted old points for: {table_names}")
+        except Exception as e:
+            logger.warning(f"[partial_update] Could not delete old points: {e}")
+            # Non-fatal — upsert will overwrite anyway
+ 
+        yield TrainingProgress(
+            step="generating_descriptions",
+            progress=15,
+            tables_done=0,
+            tables_total=total,
+            message=f"Generating descriptions for {total} table(s)...",
+        )
+ 
+        # Step 2 — Generate AI descriptions for ONLY the subset
+        new_descriptions = await self.describer.describe_all_with_user_input(
+            tables_to_update,
+            user_descs,
+        )
+ 
+        yield TrainingProgress(
+            step="indexing",
+            progress=60,
+            tables_done=total,
+            tables_total=total,
+            message="Upserting new vectors...",
+        )
+        existing_cache = self._load_schema_cache(db_key) if db_key else None
+        # Step 3 — collection already exists → indexer skips recreate, just upserts
+        try:
+            await self.indexer.index(
+                db_key=db_key,
+                tables=tables_to_update,
+                descriptions=new_descriptions,
+                dialect=dialect,
+                qdrant_collection=qdrant_collection,
+            )
+        except Exception as e:
+            logger.exception("[partial_update] Indexing failed")
+            yield TrainingProgress(
+                step="error",
+                progress=60,
+                tables_done=total,
+                tables_total=total,
+                message="Failed to upsert vectors.",
+                error=str(e),
+            )
+            return
+ 
+        # Step 4 — Merge back into the full cache
+        if db_key:
+            if existing_cache:
+                all_tables, all_descriptions = existing_cache
+                all_descriptions.update(new_descriptions)
+                updated_names = set(table_names)
+                merged_tables = [
+                    t for t in all_tables if t.table_name not in updated_names
+                ] + tables_to_update
+                self._save_schema_cache(db_key, merged_tables, all_descriptions)
+                logger.info(
+                    f"[partial_update] Cache merged — "
+                    f"{len(merged_tables)} total, {len(updated_names)} updated."
+                )
+            else:
+                self._save_schema_cache(db_key, tables_to_update, new_descriptions)
+ 
+        yield TrainingProgress(
+            step="ready",
+            progress=100,
+            tables_done=total,
+            tables_total=total,
+            message=f"{total} table(s) updated successfully.",
+        )
+
+    async def _resolve_table_info(
+        self,
+        table_name: str,
+        cached_table_map: dict,
+        engine,
+        session_id: str,
+    ) -> Optional["TableInfo"]:
+        """
+        Get TableInfo for a single table.
+        1. Try cache first (instant, no DB call)
+        2. If missing, extract ONLY that one table from the engine
+        Never extracts all tables.
+        """
+        # Cache hit
+        if table_name in cached_table_map:
+            return cached_table_map[table_name]
+ 
+        # Cache miss — extract only this one table
+        if engine is None:
+            logger.warning(
+                f"[resolve] '{table_name}' not in cache and no engine available — skipping."
+            )
+            return None
+ 
+        logger.info(f"[resolve] '{table_name}' not in cache — extracting single table from DB.")
+        extractor = SchemaExtractor(engine)
+ 
+        # Detect schema from engine dialect (default dbo for SQL Server)
+        schema = "dbo" if engine.dialect.name == "mssql" else None
+        table_info = await extractor.extract_single_table(table_name, schema=schema)
+ 
+        if table_info is None:
+            logger.warning(f"[resolve] '{table_name}' not found in DB either — skipping.")
+ 
+        return table_info
+    
     # ─────────────────────────────────────────────────────────────
     # CACHE HANDLING
     # ─────────────────────────────────────────────────────────────

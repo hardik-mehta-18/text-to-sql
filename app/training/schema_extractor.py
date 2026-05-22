@@ -96,6 +96,28 @@ class SchemaExtractor:
             tables.append(table)
         return tables
 
+    async def extract_single_table(
+        self, table_name: str, schema: Optional[str] = None
+    ) -> Optional[TableInfo]:
+        """ONE table only — calls _extract_table directly, never extract_stream."""
+        def _run():
+            try:
+                inspector = inspect(self.engine)
+                if self._should_skip(table_name):
+                    logger.warning(f"[extract_single] '{table_name}' is in skip list")
+                    return None
+                logger.info(f"[extract_single] Extracting only: [{schema}].[{table_name}]")
+                result = self._extract_table(inspector, table_name, schema)
+                logger.info(f"[extract_single] Done: {len(result.columns)} columns")
+                return result
+            except Exception as e:
+                logger.error(f"[extract_single] Failed '{table_name}': {e}", exc_info=True)
+                return None
+ 
+        # run_in_executor runs _run() in a thread — never touches extract_stream
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _run)
+    
     async def extract_stream(self) -> AsyncGenerator["TableInfo", None]:
         """Yield TableInfo one at a time as each table is extracted.
 

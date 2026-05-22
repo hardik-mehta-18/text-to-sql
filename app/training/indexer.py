@@ -86,7 +86,13 @@ class Indexer:
                 collection_name=collection,
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE)
             )
-            logger.info(f"Created collection: {collection}")
+            # ← Add this: create payload index so filter-deletes work
+            self.client.create_payload_index(
+                collection_name=collection,
+                field_name="table_name",
+                field_schema="keyword",
+            )
+            logger.info(f"Created collection + payload index: {collection}")
         else:
             logger.info(f"Collection already exists: {collection}")
 

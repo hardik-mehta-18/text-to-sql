@@ -23,7 +23,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
-
+from app.training.schema_extractor import SchemaExtractor
 from app.config import get_settings
 from app.db.connector import UniversalConnector, ConnectionError, UnsupportedDialectError
 from app.db.session_store import SessionContext, get_session_store
@@ -60,9 +60,9 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background session cleanup task."""
-    start_gdrive_sync_job()
-    yield
-    stop_gdrive_sync_job()
+    # start_gdrive_sync_job()
+    # yield
+    # stop_gdrive_sync_job()
     async def cleanup_loop():
         store = get_session_store()
         interval = settings.session.cleanup_interval_minutes * 60
@@ -216,6 +216,26 @@ def _extract_db_name(conn_str: str) -> str:
         return name or "database"
     except Exception:
         return "database"
+
+
+def _table_payload(table: Any, description: str, is_embedded: bool) -> Dict[str, Any]:
+    return {
+        "table_name": table.table_name,
+        "schema_name": table.schema_name,
+        "row_count": table.row_count,
+        "columns": [{"name": c.name, "type": c.data_type, "nullable": c.nullable} for c in table.columns],
+        "primary_keys": table.primary_keys,
+        "foreign_keys": table.foreign_keys,
+        "description": description,
+        "is_embedded": is_embedded,
+    }
+
+async def _extract_model_tables(model: SavedModel, session_id: str):
+    if not model.connection_string:
+        return []
+    engine = connector.from_connection_string(model.connection_string)
+    pipeline = TrainingPipeline()
+    return await pipeline.extract_only(session_id, engine)
 
 async def _get_table_schemas(ctx: SessionContext) -> Dict[str, Any]:
     """
@@ -956,6 +976,35 @@ class ChronoSaveModelRequest(BaseModel):
 
 class ChronoUpdateModelMetadataRequest(BaseModel):
     common_filter_keys: List[str]
+
+
+class ChronoModelEmbeddingsUpdateRequest(BaseModel):
+    tables: List[ChronoTableDescInput]
+
+class TableUpdateItem(BaseModel):
+    table_name: str
+    schema_name: Optional[str] = None
+    user_description: Optional[str] = None
+ 
+ 
+class ChronoModelUpdateRequest(BaseModel):
+    """
+    Payload for PATCH /api/chronoplot/models/{model_id}/update.
+    Send only the tables you want changed, or send all of them —
+    unchanged ones are detected via description diff and skipped.
+    """
+    session_id: Optional[str] = None   # if provided, engine is taken from the live session
+    tables: List[TableUpdateItem] = []
+ 
+ 
+class ChronoDescriptionUpdateRequest(BaseModel):
+    """
+    Payload for PUT /api/chronoplot/models/{model_id}/description.
+    Pure label patch — updates Qdrant payload only, no re-embedding.
+    """
+    table_name: str
+    user_description: str
+ 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CHRONOPLOT — Train endpoints  (no auth required)
@@ -1700,3 +1749,175 @@ async def chronoplot_load_model(
         "is_owner": effective_is_owner,
         "message": "Model loaded successfully",
     }
+
+@app.get("/api/chronoplot/models/{model_id}/tables")
+async def chronoplot_get_model_tables(
+    model_id: int,
+    request: Request,
+    _token: Any = Depends(cp_bearer),
+):
+    """
+    Get the live/cached table list for a single Chronoplot saved model.
+
+    This endpoint is designed for external UIs that receive only a model id:
+    call this first, let the user select tables and edit descriptions, then
+    send the selected rows to PATCH /api/chronoplot/models/{model_id}/embeddings.
+    """
+    user_detail_id, user_type, jwt_payload = _cp_authorize(request)
+
+    db = AppDBSession()
+    try:
+        result = (
+            db.query(SavedModel, User.username)
+            .join(User, SavedModel.user_id == User.id)
+            .filter(SavedModel.id == model_id)
+            .first()
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="Model not found.")
+
+        model, owner_username = result.SavedModel, result.username
+    finally:
+        db.close()
+
+    pipeline = TrainingPipeline()
+    cached = pipeline._load_schema_cache(model.db_key) if model.db_key else None
+    cached_tables, cached_descriptions = cached if cached else ([], {})
+    cached_map = {t.table_name: t for t in cached_tables}
+
+    fresh_tables = []
+    try:
+        fresh_tables = await _extract_model_tables(model, f"model-{model_id}-tables")
+    except Exception as exc:
+        logger.warning(f"[chronoplot] Could not refresh model {model_id} tables: {exc}")
+
+    merged = {t.table_name: t for t in cached_tables}
+    for table in fresh_tables:
+        merged[table.table_name] = table
+
+    is_super_admin = (user_type == int(UserType.SuperAdmin))
+    return {
+        "model_id": model.id,
+        "model_name": model.name,
+        "db_name": model.db_name,
+        "dialect": model.dialect,
+        "owner_name": owner_username,
+        "is_owner": (owner_username == str(user_detail_id)) or is_super_admin,
+        "tables": [
+            _table_payload(
+                table,
+                cached_descriptions.get(table.table_name, ""),
+                table.table_name in cached_map,
+            )
+            for table in sorted(merged.values(), key=lambda t: (t.schema_name or "", t.table_name))
+        ],
+    }
+
+
+@app.patch("/api/chronoplot/models/{model_id}/embeddings")
+async def chronoplot_update_model_embeddings(
+    model_id: int,
+    body: ChronoModelEmbeddingsUpdateRequest,
+    request: Request,
+    _token: Any = Depends(cp_bearer),
+):
+    """
+    Rebuild embeddings only for the selected Chronoplot model tables.
+    Only deletes/re-embeds the selected table vectors — everything else untouched.
+    """
+    user_detail_id, user_type, jwt_payload = _cp_authorize(request)
+    if not body.tables:
+        raise HTTPException(status_code=400, detail="Select at least one table to update.")
+ 
+    db = AppDBSession()
+    try:
+        result = (
+            db.query(SavedModel, User.username)
+            .join(User, SavedModel.user_id == User.id)
+            .filter(SavedModel.id == model_id)
+            .first()
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="Model not found.")
+        model, owner_username = result.SavedModel, result.username
+    finally:
+        db.close()
+ 
+    pipeline = TrainingPipeline()
+    cached = pipeline._load_schema_cache(model.db_key) if model.db_key else None
+    cached_tables, cached_descriptions = cached if cached else ([], {})
+    cached_map = {t.table_name: t for t in cached_tables}
+ 
+    selected_names = [item.table_name for item in body.tables]
+ 
+    # ── Resolve TableInfo: cache first, single-table extract only if missing ──
+    # Never calls extract_only() — no full schema extraction.
+    tables_to_train = []
+    skipped = []
+    engine = connector.from_connection_string(model.connection_string) if model.connection_string else None
+    extractor = extractor = SchemaExtractor(engine) if engine else None
+    for item in body.tables:
+        # Always re-extract from DB to pick up schema changes (new columns etc.)
+        if extractor:
+            try:
+                schema: Optional[str] = "dbo" if engine.dialect.name == "mssql" else None
+                table_info = await extractor.extract_single_table(item.table_name, schema=schema)
+                if table_info:
+                    tables_to_train.append(table_info)
+                    continue   # ← got fresh data, skip cache fallback
+            except Exception as exc:
+                logger.warning(f"[chronoplot] Live extract failed for '{item.table_name}': {exc}")
+
+        # Fallback: use cached TableInfo (columns may be stale)
+        if item.table_name in cached_map:
+            logger.warning(f"[chronoplot] Using cached columns for '{item.table_name}' — may be stale")
+            tables_to_train.append(cached_map[item.table_name])
+        else:
+            skipped.append(item.table_name)
+
+ 
+    if not tables_to_train:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No tables could be resolved. Skipped: {', '.join(skipped)}"
+        )
+ 
+    if skipped:
+        logger.warning(f"[chronoplot] Skipped tables (not found): {skipped}")
+ 
+    # ── Build user_descs: use provided description or fall back to cached ──
+    user_desc_map = {
+        item.table_name: (
+            item.user_description
+            if item.user_description is not None
+            else cached_descriptions.get(item.table_name, "")
+        )
+        for item in body.tables
+        if item.table_name not in skipped
+    }
+ 
+    # ── run_partial_update: deletes old vectors for these tables, re-embeds,
+    #    then merges back into the full cache automatically ──
+    async for progress in pipeline.run_partial_update(
+        session_id=f"chronoplot-model-{model_id}-update",
+        tables_to_update=tables_to_train,
+        user_descs=user_desc_map,
+        dialect=model.dialect,
+        db_key=model.db_key,
+        qdrant_collection=model.qdrant_collection,
+    ):
+        if progress.step == "error":
+            raise HTTPException(status_code=500, detail=progress.error or progress.message)
+ 
+    actually_updated = [t.table_name for t in tables_to_train]
+    logger.info(
+        f"[chronoplot] user_detail_id={user_detail_id} updated embeddings "
+        f"for model_id={model_id}, tables={actually_updated}"
+    )
+    return {
+        "message": "Chronoplot model embeddings updated successfully.",
+        "model_id": model.id,
+        "updated": actually_updated,
+        "skipped": skipped,
+    }
+
