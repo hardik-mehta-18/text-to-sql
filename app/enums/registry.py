@@ -281,38 +281,38 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "neglect": 1,
                 "neglect or acts of omission": 1,
                 "acts of omission": 1,
-
+ 
                 "physical abuse": 2,
                 "physical": 2,
-
+ 
                 "financial abuse": 3,
                 "financial or material abuse": 3,
                 "material abuse": 3,
-
+ 
                 "psychological abuse": 4,
                 "emotional abuse": 4,
                 "psychological or emotional abuse": 4,
-
+ 
                 "sexual abuse": 5,
                 "sexual": 5,
-
+ 
                 "organisational abuse": 6,
                 "institutional abuse": 6,
                 "organisational or institutional abuse": 6,
-
+ 
                 "discriminatory abuse": 7,
                 "discrimination": 7,
-
+ 
                 "self neglect": 8,
                 "selfneglect": 8,
-
+ 
                 "domestic violence": 9,
                 "domestic abuse": 9,
                 "domestic violence or abuse": 9,
-
+ 
                 "modern slavery": 10,
                 "slavery": 10,
-
+ 
                 "other": 11,
                 "others": 11
             }
@@ -338,33 +338,81 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "service user": 1,
                 "serviceuser": 1,
                 "client": 1,
-
+ 
                 "staff": 2,
                 "employee": 2,
                 "staff member": 2,
-
+ 
                 "family": 3,
                 "family member": 3,
                 "relative": 3,
-
+ 
                 "professional": 4,
                 "health professional": 4,
                 "care professional": 4,
-
+ 
                 "social worker": 5,
                 "socialworker": 5,
-
+ 
                 "commissioner": 6,
-
+ 
                 "public": 7,
                 "general public": 7,
-
+ 
                 "other stakeholder": 8,
                 "otherstakeholder": 8,
                 "stakeholder": 8,
                 "other": 8
             }
         }
+    },
+ 
+    # ── BNR_IncidentPerpetrator ──────────────────────────────────────────────
+    "BNR_IncidentPerpetrator": {
+        "PreparatorType": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
+        },
+    },
+ 
+    # ── BNR_IncidentVictim ───────────────────────────────────────────────────
+    "BNR_IncidentVictim": {
+        "PersonAffected": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
+        },
     },
  
     # ── BNR_Safeguarding ─────────────────────────────────────────────────────
@@ -461,26 +509,26 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "service user": 1,
                 "serviceuser": 1,
                 "client": 1,
-
+ 
                 "staff": 2,
                 "employee": 2,
-
+ 
                 "family": 3,
                 "family member": 3,
                 "relative": 3,
-
+ 
                 "professional": 4,
                 "health professional": 4,
                 "care professional": 4,
-
+ 
                 "social worker": 5,
                 "socialworker": 5,
-
+ 
                 "commissioner": 6,
-
+ 
                 "public": 7,
                 "general public": 7,
-
+ 
                 "other stakeholder": 8,
                 "otherstakeholder": 8,
                 "stakeholder": 8,
@@ -497,31 +545,79 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "service user": 1,
                 "serviceuser": 1,
                 "client": 1,
-
+ 
                 "staff": 2,
                 "employee": 2,
-
+ 
                 "family": 3,
                 "family member": 3,
                 "relative": 3,
-
+ 
                 "professional": 4,
                 "health professional": 4,
                 "care professional": 4,
-
+ 
                 "social worker": 5,
                 "socialworker": 5,
-
+ 
                 "commissioner": 6,
-
+ 
                 "public": 7,
                 "general public": 7,
-
+ 
                 "other stakeholder": 8,
                 "otherstakeholder": 8,
                 "stakeholder": 8,
                 "other": 8
             }
+        },
+    },
+ 
+    # ── BNR_SafeguardingPersonAtRiskVictims ──────────────────────────────────
+    "BNR_SafeguardingPersonAtRiskVictims": {
+        "PersonAtRisk": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
+        },
+    },
+ 
+    # ── BNR_SafeguardingPersonCausingPerpetrator ─────────────────────────────
+    "BNR_SafeguardingPersonCausingPerpetrator": {
+        "PersonCausingType": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
         },
     },
  
@@ -542,26 +638,26 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "service user": 1,
                 "serviceuser": 1,
                 "client": 1,
-
+ 
                 "staff": 2,
                 "employee": 2,
-
+ 
                 "family": 3,
                 "family member": 3,
                 "relative": 3,
-
+ 
                 "professional": 4,
                 "health professional": 4,
                 "care professional": 4,
-
+ 
                 "social worker": 5,
                 "socialworker": 5,
-
+ 
                 "commissioner": 6,
-
+ 
                 "public": 7,
                 "general public": 7,
-
+ 
                 "other stakeholder": 8,
                 "otherstakeholder": 8,
                 "stakeholder": 8,
@@ -633,26 +729,26 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "service user": 1,
                 "serviceuser": 1,
                 "client": 1,
-
+ 
                 "staff": 2,
                 "employee": 2,
-
+ 
                 "family": 3,
                 "family member": 3,
                 "relative": 3,
-
+ 
                 "professional": 4,
                 "health professional": 4,
                 "care professional": 4,
-
+ 
                 "social worker": 5,
                 "socialworker": 5,
-
+ 
                 "commissioner": 6,
-
+ 
                 "public": 7,
                 "general public": 7,
-
+ 
                 "other stakeholder": 8,
                 "otherstakeholder": 8,
                 "stakeholder": 8,
@@ -1218,13 +1314,18 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
         "ResponsiblePersonType": {
             "db_type": "int",
             "synonyms": {
-                "self": 1,
-                "service user": 2,
-                "client": 2,
-                "staff": 3,
-                "employee": 3,
-                "other": 4,
-                "family": 5,
+                "supervisee": 1,
+                "supervised": 1,
+ 
+                "line manager": 2,
+                "linemanager": 2,
+                "manager": 2,
+ 
+                "creator or modifier": 3,
+                "creator": 3,
+                "modifier": 3,
+                "created by": 3,
+                "modified by": 3,
             },
         },
     },
@@ -1234,13 +1335,18 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
         "SenderRole": {
             "db_type": "int",
             "synonyms": {
-                "self": 1,
-                "service user": 2,
-                "client": 2,
-                "staff": 3,
-                "employee": 3,
-                "other": 4,
-                "family": 5,
+                "supervisee": 1,
+                "supervised": 1,
+ 
+                "line manager": 2,
+                "linemanager": 2,
+                "manager": 2,
+ 
+                "creator or modifier": 3,
+                "creator": 3,
+                "modifier": 3,
+                "created by": 3,
+                "modified by": 3,
             },
         },
     },
@@ -1338,6 +1444,30 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
  
+    # ── BNR_SafeguardingInvestigationPersonAtRiskVictim ──────────────────────
+    "BNR_SafeguardingInvestigationPersonAtRiskVictim": {
+        "InverstigationReportForUserType": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
+        },
+    },
+ 
     # ── BNR_ComplaintOrConcernOrComplementReportProposedActionPlan ───────────
     "BNR_ComplaintOrConcernOrComplementReportProposedActionPlan": {
         "ProposedActionPlanByUserType": {
@@ -1353,35 +1483,37 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
             },
         },
     },
-    "BNR_ComplaintOrConcernOrComplementReceivingPersons" : {
+ 
+    "BNR_ComplaintOrConcernOrComplementReceivingPersons": {
         "MemberOfStaffReceivingComplaint": {
             "db_type": "int",
             "synonyms": {
                 "self": 1,
                 "myself": 1,
                 "own": 1,
-
+ 
                 "service user": 2,
                 "serviceuser": 2,
                 "client": 2,
-
+ 
                 "staff": 3,
                 "employee": 3,
                 "staff member": 3,
-
+ 
                 "other": 4,
                 "others": 4
             }
         }
     },
-    "BNR_InvestigatorAndInvestigationCompleted" : {
+ 
+    "BNR_InvestigatorAndInvestigationCompleted": {
         "InvestigatorOrInvestigationCompletedBy": {
             "db_type": "int",
             "synonyms": {
                 "investigator": 1,
                 "investigation officer": 1,
                 "assigned investigator": 1,
-
+ 
                 "investigation completed by": 2,
                 "investigation meeting completed by": 2,
                 "completed by": 2,
@@ -1394,25 +1526,26 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "self": 1,
                 "myself": 1,
                 "own": 1,
-
+ 
                 "service user": 2,
                 "serviceuser": 2,
                 "client": 2,
-
+ 
                 "staff": 3,
                 "employee": 3,
                 "staff member": 3,
-
+ 
                 "other": 4,
                 "others": 4,
-
+ 
                 "family": 5,
                 "family member": 5,
                 "relative": 5
             }
         }
     },
-    "BNR_InvestigationAndInvestigator" : {
+ 
+    "BNR_InvestigationAndInvestigator": {
         "InvestigationOrInvestigator": {
             "db_type": "int",
             "synonyms": {
@@ -1420,7 +1553,7 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "investigation authorized": 1,
                 "authorised": 1,
                 "authorized": 1,
-
+ 
                 "investigator": 2,
                 "investigation officer": 2
             }
@@ -1431,36 +1564,37 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "self": 1,
                 "myself": 1,
                 "own": 1,
-
+ 
                 "service user": 2,
                 "serviceuser": 2,
                 "client": 2,
-
+ 
                 "staff": 3,
                 "employee": 3,
                 "staff member": 3,
-
+ 
                 "other": 4,
                 "others": 4,
-
+ 
                 "family": 5,
                 "family member": 5,
                 "relative": 5
             }
         }
     },
-    "BNR_BowelMovementChart" : {
+ 
+    "BNR_BowelMovementChart": {
         "StoolSize": {
             "db_type": "int",
             "synonyms": {
                 "small": 1,
                 "little": 1,
                 "compact": 1,
-
+ 
                 "medium": 2,
                 "average": 2,
                 "normal": 2,
-
+ 
                 "large": 3,
                 "big": 3,
                 "extra large": 3,
@@ -1468,120 +1602,123 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
             }
         }
     },
-    "BNR_RecruitmentChecklistDetails" : {
+ 
+    "BNR_RecruitmentChecklistDetails": {
         "RecruitmentChecklistDetailsType": {
             "db_type": "int",
             "synonyms": {
                 "interview questions": 1,
                 "interview": 1,
-
+ 
                 "application form": 2,
                 "application": 2,
-
+ 
                 "health declaration": 3,
                 "pre employment health declaration": 3,
-
+ 
                 "equality monitoring": 4,
-
+ 
                 "48 hour opt out": 5,
                 "forty eight hour opt out": 5,
-
+ 
                 "training agreement": 6,
-
+ 
                 "family relationship declaration": 7,
                 "family declaration": 7,
-
+ 
                 "visa declaration": 8,
                 "visa": 8,
-
+ 
                 "hmrc checklist": 9,
                 "hmrc": 9,
-
+ 
                 "bank details": 10,
                 "bank info": 10,
-
+ 
                 "application link sent": 11,
-
+ 
                 "verify id": 12,
                 "authorise id": 12,
                 "verify authorise id": 12,
-
+ 
                 "dbs disclosure received": 13,
                 "dbs received": 13,
-
+ 
                 "original dbs certificate checked": 14,
                 "dbs certificate checked": 14,
-
+ 
                 "update service check": 15,
-
+ 
                 "risk assessment completed": 16,
-
+ 
                 "position of risk assessor": 17,
                 "risk assessor position": 17,
-
+ 
                 "chronoplot login details": 18,
                 "chronoplot login": 18,
-
+ 
                 "social care tv login": 19,
-
+ 
                 "qcs login": 20,
-
+ 
                 "registration email": 21,
-
+ 
                 "group documents": 22,
                 "policies procedures handbook": 22,
-
+ 
                 "international staff member": 23,
                 "sponsorship": 23,
-
+ 
                 "access to services sites": 24,
                 "system access": 24,
-
+ 
                 "staff added to trackers": 25,
                 "added to trackers": 25,
-
+ 
                 "mandatory training completed": 26,
                 "training completed": 26,
-
+ 
                 "induction pack given": 27,
                 "induction": 27,
-
+ 
                 "job description and offer letter": 28,
                 "offer letter": 28,
-
+ 
                 "signed contract": 29,
                 "contract signed": 29,
-
+ 
                 "full recruitment pack scanned": 30,
                 "documents uploaded": 30,
-
+ 
                 "details reflected on bhr information": 31,
                 "bhr details updated": 31
             }
         }
     },
-    "BNR_RecruitmentChecklistReferences" : {
+ 
+    "BNR_RecruitmentChecklistReferences": {
         "ReferenceType": {
             "db_type": "int",
             "synonyms": {
                 "first professional": 1,
                 "professional reference 1": 1,
                 "first reference": 1,
-
+ 
                 "second professional": 2,
                 "professional reference 2": 2,
                 "second reference": 2,
-
+ 
                 "character reference": 3,
                 "character": 3,
                 "personal reference": 3,
-
+ 
                 "other": 4,
                 "others": 4
             }
         }
     },
-    "BNR_CostingCalculatorHourDetail" : {
+ 
+    "BNR_CostingCalculatorHourDetail": {
         "Day": {
             "db_type": "int",
             "synonyms": {
@@ -1594,7 +1731,209 @@ ENUM_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
                 "sunday": 0,
             }
         }
-    }
+    },
+ 
+    # ── BNR_StaffAppraisalCapability ─────────────────────────────────────────
+    "BNR_StaffAppraisalCapability": {
+        "CapabilityAreaType": {
+            "db_type": "int",
+            "synonyms": {
+                "knowledge functional expert area": 1,
+                "knowledge functional": 1,
+                "functional knowledge": 1,
+                "expert area": 1,
+ 
+                "knowledge legal regulatory and best practice": 2,
+                "knowledge legal regulatory": 2,
+                "legal regulatory": 2,
+                "best practice compliance": 2,
+                "regulatory knowledge": 2,
+ 
+                "customer relations": 3,
+                "customer service": 3,
+                "client relations": 3,
+ 
+                "time management": 4,
+                "time": 4,
+ 
+                "cost control": 5,
+                "cost management": 5,
+                "budget control": 5,
+ 
+                "reporting and administration": 6,
+                "reporting": 6,
+                "administration": 6,
+                "admin": 6,
+ 
+                "communication skills": 7,
+                "communication": 7,
+ 
+                "delegation skills": 8,
+                "delegation": 8,
+ 
+                "it and equipment skills": 9,
+                "it skills": 9,
+                "equipment skills": 9,
+                "it equipment": 9,
+ 
+                "ability to reflect on own performance": 10,
+                "self reflection": 10,
+                "reflect on performance": 10,
+                "self review": 10,
+ 
+                "problem solving and decision making": 11,
+                "problem solving": 11,
+                "decision making": 11,
+ 
+                "team work and developing others": 12,
+                "team work": 12,
+                "teamwork": 12,
+                "developing others": 12,
+ 
+                "energy determination and work rate": 13,
+                "energy": 13,
+                "determination": 13,
+                "work rate": 13,
+ 
+                "steadiness under pressure": 14,
+                "pressure management": 14,
+                "composure": 14,
+ 
+                "adaptability flexibility and mobility": 15,
+                "adaptability": 15,
+                "flexibility": 15,
+                "mobility": 15,
+ 
+                "personal appearance and image": 16,
+                "personal appearance": 16,
+                "appearance": 16,
+                "image": 16,
+ 
+                "other": 99,
+            },
+        },
+    },
+ 
+    # ── BNR_StaffAppraisalActionPlan ─────────────────────────────────────────
+    "BNR_StaffAppraisalActionPlan": {
+        "AppraisalActionPlanningResponsiblePerson": {
+            "db_type": "int",
+            "synonyms": {
+                "appraisee": 1,
+                "appraised": 1,
+                "staff being appraised": 1,
+ 
+                "line manager": 2,
+                "linemanager": 2,
+                "manager": 2,
+                "appraiser": 2,
+ 
+                "creator or modifier": 3,
+                "creator": 3,
+                "modifier": 3,
+                "created by": 3,
+                "modified by": 3,
+            },
+        },
+    },
+ 
+    # ── BNR_CareConcernRelatedToPersons ──────────────────────────────────────
+    "BNR_CareConcernRelatedToPersons": {
+        "RelatedPerson": {
+            "db_type": "int",
+            "synonyms": {
+                "service user": 1,
+                "serviceuser": 1,
+                "client": 1,
+ 
+                "staff": 2,
+                "employee": 2,
+ 
+                "visitor": 3,
+                "visitors": 3,
+                "guest": 3,
+ 
+                "contractor": 4,
+                "contractors": 4,
+ 
+                "other": 5,
+            },
+        },
+    },
+ 
+    # ── BNR_Goal ─────────────────────────────────────────────────────────────
+    "BNR_Goal": {
+        "Status": {
+            "db_type": "int",
+            "synonyms": {
+                "active": 1,
+                "enabled": 1,
+                "in progress": 1,
+                "ongoing": 1,
+ 
+                "on hold": 2,
+                "onhold": 2,
+                "hold": 2,
+                "paused": 2,
+ 
+                "achieved": 3,
+                "completed": 3,
+                "done": 3,
+                "success": 3,
+ 
+                "not achieved": 4,
+                "notachieved": 4,
+                "failed": 4,
+                "unsuccessful": 4,
+            },
+        },
+    },
+ 
+    # ── BNR_GoalTask ─────────────────────────────────────────────────────────
+    "BNR_GoalTask": {
+        "CompletionStatus": {
+            "db_type": "int",
+            "synonyms": {
+                "pending": 0,
+                "not started": 0,
+                "waiting": 0,
+ 
+                "completed": 1,
+                "done": 1,
+                "finished": 1,
+                "complete": 1,
+ 
+                "failed to complete": 2,
+                "failedtocomplete": 2,
+                "failed": 2,
+                "not completed": 2,
+ 
+                "unable to complete": 3,
+                "unabletocomplete": 3,
+                "unable": 3,
+                "could not complete": 3,
+            },
+        },
+    },
+ 
+    # ── BNR_Investigation ────────────────────────────────────────────────────
+    "BNR_Investigation": {
+        "SafeguardType": {
+            "db_type": "int",
+            "synonyms": {
+                "none": 0,
+                "not applicable": 0,
+                "na": 0,
+ 
+                "safeguarding": 1,
+                "safeguard": 1,
+ 
+                "care concern": 2,
+                "careconcern": 2,
+                "concern": 2,
+            },
+        },
+    },
 }
  
  
