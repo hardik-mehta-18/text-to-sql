@@ -351,8 +351,17 @@ class SQLGenerator:
 
             ── RULE 5: BOOLEAN / BIT COLUMNS ───────────────────────────────
             Columns with BIT type OR names starting with Is/Has → use = 1 or = 0
-            ✅ WHERE t1.IsDeleted = 0
+            ✅ WHERE t1.IsDeleted = 0 (only for the main/FROM table)
             ⛔ WHERE t1.IsDeleted LIKE '%false%'
+            
+            ── RULE 5B: NO IsDeleted FILTERS ON LEFT JOINED TABLES IN WHERE ──
+            NEVER add `IsDeleted = 0` (or `IsDeleted = 1`, or other soft delete checks)
+            for any LEFT JOINed tables in the `WHERE` clause. Doing so converts the
+            `LEFT JOIN` into an `INNER JOIN` and filters out valid rows where the joined
+            table is NULL (which is always true for at least one of BNR_Service_User or
+            BNR_UserDetails in mutual exclusion).
+            Only write `IsDeleted = 0` for the main FROM table. The post-processor
+            automatically handles soft delete filter injection for joined tables.
 
             ── RULE 6: ENUM COLUMNS ────────────────────────────────────────
             Enum columns store integers. Use = or IN with the integer from ENUM VALUE MAP.
@@ -411,55 +420,64 @@ class SQLGenerator:
 
             ── RULE 16: PERSON REFERENCE TABLES NAME SELECTION ──────────────
             Many tables refer to service users, staff, or others via separate foreign keys or name columns. To fetch the actual names, you MUST unconditionally LEFT JOIN to BNR_Service_User and BNR_UserDetails and use a CASE WHEN block.
+            To avoid NULL results when string-concatenating name columns in SQL Server (where any NULL value in + concatenation propagates to NULL), you MUST use COALESCE for each string column (e.g., COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')).
             
             Tables and exact expressions:
             1. BNR_IncidentVictim / BNR_IncidentPerpetrator:
                - For perpetrator name:
-                 CASE WHEN ip.PerpetratorServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
-                      WHEN ip.PerpetratorUserDetailsId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                 CASE WHEN ip.PerpetratorServiceUserId IS NOT NULL THEN COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')
+                      WHEN ip.PerpetratorUserDetailsId IS NOT NULL THEN COALESCE(ud.FirstName, '') + ' ' + COALESCE(ud.LastName, '')
                       ELSE ip.Perpetrator END AS PerpetratorName
                - For victim name:
-                 CASE WHEN iv.VictimServiceUserId IS NOT NULL THEN su_victim.FirstName + ' ' + su_victim.Surname
-                      WHEN iv.VictimUserDetailsId IS NOT NULL THEN ud_victim.FirstName + ' ' + ud_victim.LastName
+                 CASE WHEN iv.VictimServiceUserId IS NOT NULL THEN COALESCE(su_victim.FirstName, '') + ' ' + COALESCE(su_victim.Surname, '')
+                      WHEN iv.VictimUserDetailsId IS NOT NULL THEN COALESCE(ud_victim.FirstName, '') + ' ' + COALESCE(ud_victim.LastName, '')
                       ELSE iv.Victim END AS VictimName
 
             2. BNR_SafeguardingPersonAtRiskVictims (alias e.g. prv):
                - LEFT JOIN to BNR_Service_User (using PersonAtRiskServiceUserId)
                - LEFT JOIN to BNR_UserDetails (using PersonAtRiskUserDetailId)
                - CASE statement:
-                 CASE WHEN prv.PersonAtRiskServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
-                      WHEN prv.PersonAtRiskUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                 CASE WHEN prv.PersonAtRiskServiceUserId IS NOT NULL THEN COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')
+                      WHEN prv.PersonAtRiskUserDetailId IS NOT NULL THEN COALESCE(ud.FirstName, '') + ' ' + COALESCE(ud.LastName, '')
                       ELSE prv.PersonAtRiskOtherName END AS PersonAtRiskName
 
             3. BNR_SafeguardingPersonCausingPerpetrator (alias e.g. pcp):
                - LEFT JOIN to BNR_Service_User (using PersonCausingServiceUserId)
                - LEFT JOIN to BNR_UserDetails (using PersonCausingUserDetailId)
                - CASE statement:
-                 CASE WHEN pcp.PersonCausingServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
-                      WHEN pcp.PersonCausingUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                 CASE WHEN pcp.PersonCausingServiceUserId IS NOT NULL THEN COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')
+                      WHEN pcp.PersonCausingUserDetailId IS NOT NULL THEN COALESCE(ud.FirstName, '') + ' ' + COALESCE(ud.LastName, '')
                       ELSE pcp.PersonCausingOtherName END AS PersonCausingName
 
             4. BNR_SafeguardingInvestigationPersonAtRiskVictim (alias e.g. ipv):
                - LEFT JOIN to BNR_Service_User (using InvestigationReportServiceUserId)
                - LEFT JOIN to BNR_UserDetails (using InverstigationReportUserDetailId)
                - CASE statement:
-                 CASE WHEN ipv.InvestigationReportServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
-                      WHEN ipv.InverstigationReportUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                 CASE WHEN ipv.InvestigationReportServiceUserId IS NOT NULL THEN COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')
+                      WHEN ipv.InverstigationReportUserDetailId IS NOT NULL THEN COALESCE(ud.FirstName, '') + ' ' + COALESCE(ud.LastName, '')
                       ELSE ipv.InvestigationReportOtherName END AS PersonAtRiskName
 
             5. BNR_CareConcernRelatedToPersons (alias e.g. ccr):
                - LEFT JOIN to BNR_Service_User (using RelatedServiceUserId)
                - LEFT JOIN to BNR_UserDetails (using RelatedUserDetailsId)
                - CASE statement:
-                 CASE WHEN ccr.RelatedServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
-                      WHEN ccr.RelatedUserDetailsId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                 CASE WHEN ccr.RelatedServiceUserId IS NOT NULL THEN COALESCE(su.FirstName, '') + ' ' + COALESCE(su.Surname, '')
+                      WHEN ccr.RelatedUserDetailsId IS NOT NULL THEN COALESCE(ud.FirstName, '') + ' ' + COALESCE(ud.LastName, '')
                       ELSE ccr.OtherRelatedPersonName END AS RelatedPersonName
 
             DO NOT just select FirstName and Surname from BNR_Service_User. You MUST include both joins and the CASE statement. Ensure you use the correct string concatenation operator for the dialect (e.g., + for SQL Server).
 
-            AGGREGATION RULE (CRITICAL FOR 1-TO-MANY LISTINGS):
-            If the question asks to list parent entities (such as care concerns, safeguarding reports, or incidents) along with the "people involved", "victims", or "perpetrators", doing a direct JOIN will cause duplicate rows or cut off the TOP/LIMIT results (since one entity can have multiple people).
-            To prevent this, you MUST aggregate the names into a single string using STRING_AGG (or the dialect's concatenation function) and group by the other selected parent columns:
+            ── RULE 16B: AGGREGATION FOR 1-TO-MANY LISTINGS (CRITICAL) ──
+            If the question asks to list parent entities (such as care concerns, safeguarding reports, or incidents) along with the "people involved", "victims", "perpetrators", or "related people", you MUST NOT select their names as individual columns. Doing so causes duplicate rows and cuts off top results.
+            Instead, you MUST aggregate the names into a single comma-separated string using STRING_AGG (or the dialect's concatenation function) and GROUP BY all other selected columns from the parent table.
+            
+            Example SELECT statement:
+            SELECT DISTINCT cc.CreationTime, STRING_AGG(CASE WHEN ... END, ', ') AS PeopleInvolved
+            FROM dbo.BNR_CareConcern AS cc ...
+            GROUP BY cc.CreationTime
+            ORDER BY cc.CreationTime DESC
+            
+            Dialect functions:
             - SQL Server: STRING_AGG(your_case_expression, ', ') AS PeopleInvolved
             - PostgreSQL: STRING_AGG(your_case_expression, ', ') AS PeopleInvolved
             - SQLite: GROUP_CONCAT(your_case_expression, ', ') AS PeopleInvolved
