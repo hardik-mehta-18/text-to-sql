@@ -11,7 +11,7 @@ from app.query.planner import QueryPlan, TableContext
 from app.utils.gemini_key_manager import get_key_manager
 from app.query.enrich_schema import build_enriched_schema
 from app.enums.registry import get_relevant_enums, build_enum_prompt_block
-
+import re
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +23,76 @@ class GenerationResult:
     response_intent: str = "data" 
 
 
-import re
+def collect_conjuncts(node):
+    import sqlglot
+    from sqlglot import exp
+    if isinstance(node, exp.And):
+        return collect_conjuncts(node.left) + collect_conjuncts(node.right)
+    return [node]
+
+
+def remove_left_joined_isdeleted_from_where(sql: str, dialect: str = "tsql") -> str:
+    import sqlglot
+    from sqlglot import exp
+    try:
+        dialect_map = {
+            "sqlite": "sqlite",
+            "postgresql": "postgres",
+            "mysql": "mysql",
+            "sqlserver": "tsql",
+            "tsql": "tsql",
+        }
+        dialect_key = dialect_map.get(dialect.lower(), "tsql")
+        tree = sqlglot.parse_one(sql, read=dialect_key)
+        
+        for select_node in tree.find_all(exp.Select):
+            left_joined_aliases = set()
+            for join in select_node.find_all(exp.Join):
+                if join.args.get("side") in ("LEFT", "RIGHT"):
+                    table_node = join.find(exp.Table)
+                    if table_node:
+                        alias = table_node.alias if table_node.alias else table_node.name
+                        if alias:
+                            left_joined_aliases.add(alias.lower())
+            
+            if not left_joined_aliases:
+                continue
+                
+            where_node = select_node.args.get("where")
+            if not where_node:
+                continue
+                
+            conjuncts = collect_conjuncts(where_node.this)
+            
+            remaining_conjuncts = []
+            for cond in conjuncts:
+                is_left_joined_isdeleted = False
+                if isinstance(cond, exp.EQ):
+                    left = cond.left
+                    if isinstance(left, exp.Column) and left.name.lower() == "isdeleted":
+                        col_alias = left.text("table").lower()
+                        if col_alias in left_joined_aliases:
+                            is_left_joined_isdeleted = True
+                
+                if not is_left_joined_isdeleted:
+                    remaining_conjuncts.append(cond)
+            
+            if not remaining_conjuncts:
+                select_node.set("where", None)
+            else:
+                new_where_expr = None
+                for cond in remaining_conjuncts:
+                    if new_where_expr is None:
+                        new_where_expr = cond.copy()
+                    else:
+                        new_where_expr = exp.and_(new_where_expr, cond.copy())
+                select_node.set("where", exp.Where(this=new_where_expr))
+                
+        return tree.sql(dialect=dialect_key)
+    except Exception as e:
+        logger.warning(f"Failed to remove left-joined IsDeleted filters: {e}")
+        return sql
+
 
 def expand_boolean_conditions(sql: str) -> str:
     def replacer(match):
@@ -1511,8 +1580,7 @@ class SQLGenerator:
                 dialect=plan.dialect,
             )
             logger.info(f'Fix result : {fix_result}')
-            sql = fix_result.fixed_sql
-
+            sql = remove_left_joined_isdeleted_from_where(sql, plan.dialect)
             sql = expand_boolean_conditions(sql)
             sql = remove_unrequested_ids(sql, plan.question, plan.dialect)
             sql = ensure_distinct(sql)
