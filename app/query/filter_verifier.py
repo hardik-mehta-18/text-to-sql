@@ -40,7 +40,8 @@ class SQLFilterVerifier:
     # ──────────────────────────────────────────────────────────────────────
     def verify_and_inject(self, sql, filter_keys, filter_values, table_schemas, column_mappings=None):
         if not filter_keys:
-            return sql
+            # We can still run to inject soft delete filters even if filter_keys is empty
+            pass
 
         try:
             expression = parse_one(sql, read=DIALECT_MAP.get(self.dialect.lower(), "postgres"))
@@ -48,204 +49,237 @@ class SQLFilterVerifier:
             logger.error(f"SQL parsing failed: {e}")
             return sql
 
-        # Collect ALL tables (including subquery ones) for schema awareness
-        tables_in_query = []
-        for table in expression.find_all(exp.Table):
-            t_name  = table.name.lower()
-            t_alias = table.alias if table.alias else t_name
-            
-            is_left_join = False
-            parent = table.parent
-            if isinstance(parent, exp.Join) and parent.side in ("LEFT", "RIGHT"):
-                is_left_join = True
-                
-            tables_in_query.append({"name": t_name, "alias": t_alias, "expression": table, "is_left_join": is_left_join})
-
-        logger.info(f"Tables in query: {[t['name'] for t in tables_in_query]}")
-
-        # ← NEW: compute which aliases are safe to reference in outer WHERE
-        outer_scope_aliases = self._get_outer_scope_aliases(expression)
-        
-        # Filter to only outer-scope tables for filter/join injection
-        outer_tables_in_query = [
-            t for t in tables_in_query
-            if t["alias"] in outer_scope_aliases
-        ]
-        
-        # Sort so that:
-        # 1. Non-left-joined tables (primary or INNER JOIN) are prioritized.
-        # 2. Person/lookup tables (like BNR_Service_User or BNR_UserDetails) are deprioritized
-        #    relative to business entity tables to prevent incorrect left-join filtering.
-        def get_table_priority(table_info):
-            is_left = 1 if table_info["is_left_join"] else 0
-            t_name_norm = table_info["name"].lower().replace("_", "").replace(" ", "")
-            is_person_lookup = 1 if ("serviceuser" in t_name_norm or "userdetails" in t_name_norm) else 0
-            return (is_left, is_person_lookup)
-
-        outer_tables_in_query.sort(key=get_table_priority)
-
-
-        existing_tables_alias_map = {t["name"]: t["alias"] for t in outer_tables_in_query}
-
         norm_filter_values = {k.lower(): v for k, v in filter_values.items()}
-        column_mappings    = column_mappings or {}
-        filters_to_inject  = []
-        joins_to_inject    = []
+        column_mappings = column_mappings or {}
 
-        for key in filter_keys:
-            k_lower = key.lower()
-            val = norm_filter_values.get(k_lower)
+        # 1. Find all Select nodes in the query (walking the AST)
+        select_nodes = list(expression.find_all(exp.Select))
+        if not select_nodes:
+            return sql
 
-            # Use outer_tables_in_query for pass 1 — never inject on subquery tables
-            matched = self._check_tables_in_query(
-                key, val, outer_tables_in_query, table_schemas, column_mappings
-            )
-            if matched:
-                filters_to_inject.append(matched)
+        # Let's find the main/outer select node
+        outer_select = expression.find(exp.Select)
+
+        def get_select_ancestor(node):
+            curr = node.parent
+            while curr is not None:
+                if isinstance(curr, exp.Select):
+                    return curr
+                curr = curr.parent
+            return None
+
+        # 2. For each Select node, gather its local tables and inject site filters
+        for select_node in select_nodes:
+            # Find tables that belong directly to this select node
+            local_tables = []
+            for table in select_node.find_all(exp.Table):
+                if get_select_ancestor(table) == select_node:
+                    t_name = table.name.lower()
+                    t_alias = table.alias if table.alias else t_name
+                    
+                    is_left_join = False
+                    curr = table.parent
+                    while curr is not None and curr != select_node:
+                        if isinstance(curr, exp.Join):
+                            if curr.side in ("LEFT", "RIGHT"):
+                                is_left_join = True
+                            break
+                        curr = curr.parent
+                    
+                    local_tables.append({
+                        "name": t_name,
+                        "alias": t_alias,
+                        "expression": table,
+                        "is_left_join": is_left_join
+                    })
+
+            # If no tables in this select block, skip
+            if not local_tables:
                 continue
 
-            logger.info(
-                f"Filter key '{key}' not found in any outer-scope table. "
-                f"Starting BFS from outer-scope tables."
-            )
-            bfs_result = None
-            for table_info in outer_tables_in_query:
-                logger.info(f"BFS starting from table '{table_info['name']}'")
-                bfs_result = self._bfs_find_filter(
-                    start_table=table_info["name"],
-                    start_alias=table_info["alias"],
-                    filter_key=key,
-                    filter_val=val,
-                    table_schemas=table_schemas,
-                    column_mappings=column_mappings,
-                    existing_tables_alias_map=existing_tables_alias_map,
+            # Prioritize table ordering: non-left-joined first, then business entity tables before lookup ones
+            def get_table_priority(table_info):
+                is_left = 1 if table_info["is_left_join"] else 0
+                t_name_norm = table_info["name"].lower().replace("_", "").replace(" ", "")
+                is_person_lookup = 1 if ("serviceuser" in t_name_norm or "userdetails" in t_name_norm) else 0
+                return (is_left, is_person_lookup)
+
+            local_tables.sort(key=get_table_priority)
+
+            # Enforce the filter_keys
+            for key in filter_keys:
+                k_lower = key.lower()
+                val = norm_filter_values.get(k_lower)
+
+                # Check if resolved directly on any table in this Select block
+                matched_condition = None
+                matched_table_info = None
+                for table_info in local_tables:
+                    t_name = table_info["name"]
+                    t_alias = table_info["alias"]
+
+                    if self._is_site_filter_skip_table(t_name, key):
+                        continue
+
+                    actual_col = self._resolve_column(t_name, key, table_schemas, column_mappings)
+                    if actual_col:
+                        if val is not None and val != "" and val != []:
+                            matched_condition = self._build_condition(t_alias, actual_col, val)
+                            matched_table_info = table_info
+                            break
+
+                if matched_condition:
+                    # Inject condition directly on this table
+                    cond_expr = parse_one(matched_condition)
+                    is_joined = False
+                    join_node = None
+                    curr = matched_table_info["expression"].parent
+                    while curr is not None and curr != select_node:
+                        if isinstance(curr, exp.Join):
+                            is_joined = True
+                            join_node = curr
+                            break
+                        curr = curr.parent
+
+                    if is_joined and join_node:
+                        existing_on = join_node.args.get("on")
+                        if existing_on:
+                            join_node.set("on", exp.and_(existing_on, cond_expr))
+                        else:
+                            join_node.set("on", cond_expr)
+                    else:
+                        select_node.where(cond_expr, copy=False)
+                    continue
+
+                # If not matched directly, try BFS inside this Select block
+                logger.info(
+                    f"Filter key '{key}' not found directly in select block tables. "
+                    f"Starting BFS from select block tables: {[t['name'] for t in local_tables]}."
                 )
+                bfs_result = None
+                existing_tables_alias_map = {t["name"]: t["alias"] for t in local_tables}
+                for table_info in local_tables:
+                    bfs_result = self._bfs_find_filter(
+                        start_table=table_info["name"],
+                        start_alias=table_info["alias"],
+                        filter_key=key,
+                        filter_val=val,
+                        table_schemas=table_schemas,
+                        column_mappings=column_mappings,
+                        existing_tables_alias_map=existing_tables_alias_map
+                    )
+                    if bfs_result:
+                        break
+
                 if bfs_result:
-                    break
+                    condition, new_joins = bfs_result
+                    # Inject new joins into this select_node
+                    for join_table, join_alias, on_clause in new_joins:
+                        join_node = exp.Join(
+                            this=exp.Table(
+                                this=exp.Identifier(this=join_table, quoted=False),
+                                alias=exp.TableAlias(
+                                    this=exp.Identifier(this=join_alias, quoted=False)
+                                ),
+                            ),
+                            on=parse_one(on_clause),
+                            kind="LEFT",
+                        )
+                        select_node.append("joins", join_node)
+                    
+                    # Inject condition into WHERE clause
+                    select_node.where(parse_one(condition), copy=False)
+                else:
+                    # If this is the outer select block, we must raise a PermissionError
+                    if select_node is outer_select:
+                        logger.warning(
+                            f"Security Block: mandatory filter '{key}' could not be resolved on outer block. "
+                            f"Tables: {[t['name'] for t in local_tables]}"
+                        )
+                        raise PermissionError(
+                            f"Access denied: could not enforce the mandatory '{key}' filter "
+                            f"for this query. Please contact your administrator."
+                        )
+                    else:
+                        logger.info(
+                            f"Subquery filter resolution skipped for key '{key}' — table has no path to filter."
+                        )
 
-            if bfs_result:
-                condition, new_joins = bfs_result
-                filters_to_inject.append(condition)
-                joins_to_inject.extend(new_joins)
-            else:
-                logger.warning(
-                    f"Security Block: mandatory filter '{key}' could not be resolved. "
-                    f"Tables: {[t['name'] for t in outer_tables_in_query]}"
+        # 3. Inject soft delete filters for all tables in all select blocks
+        for select_node in select_nodes:
+            local_tables = []
+            for table in select_node.find_all(exp.Table):
+                if get_select_ancestor(table) == select_node:
+                    local_tables.append(table)
+
+            for table_node in local_tables:
+                t_name = table_node.name.lower()
+                t_alias = table_node.alias if table_node.alias else t_name
+
+                schema = self._get_schema_payload(t_name, table_schemas)
+                if schema is None:
+                    continue
+
+                if isinstance(schema, dict):
+                    col_list = [
+                        c["name"] if isinstance(c, dict) else c
+                        for c in schema.get("columns", [])
+                    ]
+                elif isinstance(schema, list):
+                    col_list = schema
+                else:
+                    continue
+
+                is_deleted_col = next(
+                    (c for c in col_list if c.lower() == "isdeleted"),
+                    None
                 )
-                raise PermissionError(
-                    f"Access denied: could not enforce the mandatory '{key}' filter "
-                    f"for this query. Please contact your administrator."
-                )
 
-        if joins_to_inject:
-            expression = self._inject_joins(expression, joins_to_inject)
+                if is_deleted_col:
+                    condition_str = f"{t_alias}.{is_deleted_col} = 0"
+                    try:
+                        cond_expr = parse_one(condition_str)
+                        is_joined = False
+                        join_node = None
+                        curr = table_node.parent
+                        while curr is not None and curr != select_node:
+                            if isinstance(curr, exp.Join):
+                                is_joined = True
+                                join_node = curr
+                                break
+                            curr = curr.parent
 
-        for cond_str in filters_to_inject:
-            try:
-                cond_expr = parse_one(cond_str)
-                expression = expression.where(cond_expr, copy=False)
-            except Exception as e:
-                logger.error(f"Failed to inject filter '{cond_str}': {e}")
-
-        # Pass outer_tables_in_query — soft delete only on outer scope tables
-        expression = self._inject_soft_delete_filters(
-            expression, outer_tables_in_query, table_schemas
-        )
+                        if is_joined and join_node:
+                            existing_on = join_node.args.get("on")
+                            if existing_on:
+                                join_node.set("on", exp.and_(existing_on, cond_expr))
+                            else:
+                                join_node.set("on", cond_expr)
+                            logger.info(
+                                f"[soft-delete] Injected '{condition_str}' to JOIN ON clause of '{t_name}'"
+                            )
+                        else:
+                            select_node.where(cond_expr, copy=False)
+                            logger.info(
+                                f"[soft-delete] Injected '{condition_str}' for table '{t_name}' (primary/WHERE)"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"[soft-delete] Failed to inject for '{t_name}': {e}"
+                        )
 
         result_sql = expression.sql(dialect=DIALECT_MAP.get(self.dialect.lower(), "postgres"))
         result_sql = self._fix_distinct_order_by(result_sql)
         logger.info(f"Final filtered SQL: {result_sql}")
         return result_sql
 
-
-    # ──────────────────────────────────────────────────────────────────────
-    # SOFT DELETE FILTER INJECTION
-    # ──────────────────────────────────────────────────────────────────────
     def _inject_soft_delete_filters(
         self,
         expression,
         tables_in_query: List[Dict],
         table_schemas: Dict[str, Any],
     ) -> any:
-        """
-        For every table in the OUTER scope only, if it has an 'IsDeleted' column,
-        inject: alias.IsDeleted = 0
-        """
-        # Build outer-scope-only alias set using sqlglot tree walking
-        outer_scope_aliases = self._get_outer_scope_aliases(expression)
-        
-        for table_info in tables_in_query:
-            t_name  = table_info["name"]
-            t_alias = table_info["alias"]
-
-            # ← THE KEY FIX: skip tables whose alias only lives in a subquery
-            if t_alias not in outer_scope_aliases:
-                logger.info(
-                    f"[soft-delete] Skipping '{t_name}' (alias '{t_alias}') "
-                    f"— lives inside a subquery, not in outer scope."
-                )
-                continue
-
-            schema = self._get_schema_payload(t_name, table_schemas)
-            if schema is None:
-                logger.debug(f"[soft-delete] No schema for '{t_name}', skipping.")
-                continue
-
-            if isinstance(schema, dict):
-                col_list = [
-                    c["name"] if isinstance(c, dict) else c
-                    for c in schema.get("columns", [])
-                ]
-            elif isinstance(schema, list):
-                col_list = schema
-            else:
-                continue
-
-            is_deleted_col = next(
-                (c for c in col_list if c.lower() == "isdeleted"),
-                None
-            )
-
-            if is_deleted_col:
-                condition_str = f"{t_alias}.{is_deleted_col} = 0"
-                try:
-                    cond_expr = parse_one(condition_str)
-                    
-                    is_joined = False
-                    for join in expression.find_all(exp.Join):
-                        j_alias = ""
-                        if join.this:
-                            if join.this.alias:
-                                j_alias = str(join.this.alias)
-                            elif isinstance(join.this, exp.Table):
-                                j_alias = join.this.name
-                        
-                        if j_alias and j_alias.lower() == t_alias.lower():
-                            is_joined = True
-                            existing_on = join.args.get("on")
-                            if existing_on:
-                                new_on = exp.and_(existing_on, cond_expr)
-                                join.set("on", new_on)
-                                logger.info(
-                                    f"[soft-delete] Injected '{condition_str}' to JOIN ON clause of '{t_name}'"
-                                )
-                            else:
-                                join.set("on", cond_expr)
-                                logger.info(
-                                    f"[soft-delete] Set JOIN ON clause of '{t_name}' to '{condition_str}'"
-                                )
-                            break
-                    
-                    if not is_joined:
-                        expression = expression.where(cond_expr, copy=False)
-                        logger.info(
-                            f"[soft-delete] Injected '{condition_str}' for table '{t_name}' (primary)"
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"[soft-delete] Failed to inject for '{t_name}': {e}"
-                    )
-
+        # Kept for backward compatibility if called from elsewhere, but verify_and_inject handles this natively now
         return expression
     
     def _get_outer_scope_aliases(self, expression) -> set:

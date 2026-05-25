@@ -709,10 +709,15 @@ Do not output markdown or backticks."""
         if not mapping:
             return columns, rows
 
+        # Normalize mapping keys to lowercase for case-insensitive lookup
+        # since LLMs often return keys in different casing than the DB columns
+        norm_mapping = {k.lower(): v for k, v in mapping.items()}
+
         new_columns = []
         for col in columns:
-            if col in mapping and mapping[col] is not None:
-                new_columns.append(mapping[col])
+            mapped_val = norm_mapping.get(col.lower())
+            if mapped_val is not None:
+                new_columns.append(mapped_val)
 
         if not new_columns:
             return columns, rows
@@ -721,8 +726,9 @@ Do not output markdown or backticks."""
         for row in rows:
             new_row = {}
             for col in columns:
-                if col in mapping and mapping.get(col) is not None:
-                    new_row[mapping[col]] = row.get(col)
+                mapped_val = norm_mapping.get(col.lower())
+                if mapped_val is not None:
+                    new_row[mapped_val] = row.get(col)
             new_rows.append(new_row)
 
         return new_columns, new_rows

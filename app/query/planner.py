@@ -394,6 +394,10 @@ RULES for Table Selection:
 4. INCIDENT QUERIES: If the user asks about "incidents", "what happened", or "safety logs", ALWAYS include BNR_Incidents.
 5. SEARCHING FOR PEOPLE: If searching for a person by name without clear type, you may need both BNR_Service_User and BNR_UserDetails. But if "service user" is explicitly mentioned, prefer BNR_Service_User.
 6. CARE PROFILE: Health, diagnosis, allergies → BNR_AboutMeServiceUser.
+7. CONVERSATION HISTORY & FOLLOW-UPS (CRITICAL FOR STALE CONTEXT):
+   - Analyze the CONVERSATION HISTORY (if present) to determine if the new QUESTION is a follow-up query that continues the context of the previous query (e.g. asking "who are the other ones?", "show details of the last record", "their date of admission", referring to entities like "IS1" or "Vikas" mentioned in the previous turn).
+   - If the new QUESTION is a follow-up, you MUST select all tables relevant to the follow-up, building on the previous SQL/context.
+   - If the new QUESTION is NOT a follow-up (i.e., it starts a completely new topic or query, e.g., asking about different entities, a different type of request, or a general question), you MUST ignore all tables and columns from the previous turns. Perform a fresh table selection based ONLY on the new QUESTION.
 
 OUTPUT FORMAT:
 Return a JSON object ONLY.

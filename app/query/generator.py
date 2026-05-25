@@ -338,14 +338,11 @@ class SQLGenerator:
             Status, employment, active/inactive, login → always use BNR_UserDetails.
             BNR_AboutMeServiceUser is for care profiles, NOT status.
 
-            ── RULE 16: INCIDENT VICTIMS & PERPETRATORS NAME SELECTION ─────
-            When querying for victims or perpetrators of an incident, the text columns
-            ("Victim" and "Perpetrator") in BNR_IncidentVictim and BNR_IncidentPerpetrator 
-            may be NULL because actual names are stored in BNR_Service_User or BNR_UserDetails.
-            CRITICAL: Whenever you query BNR_IncidentVictim or BNR_IncidentPerpetrator, you MUST unconditionally:
-            1. LEFT JOIN to BNR_Service_User (using VictimServiceUserId or PerpetratorServiceUserId)
-            2. LEFT JOIN to BNR_UserDetails (using VictimUserDetailsId or PerpetratorUserDetailsId)
-            3. Construct/select the name using EXACTLY this CASE WHEN expression:
+            ── RULE 16: PERSON REFERENCE TABLES NAME SELECTION ──────────────
+            Many tables refer to service users, staff, or others via separate foreign keys or name columns. To fetch the actual names, you MUST unconditionally LEFT JOIN to BNR_Service_User and BNR_UserDetails and use a CASE WHEN block.
+            
+            Tables and exact expressions:
+            1. BNR_IncidentVictim / BNR_IncidentPerpetrator:
                - For perpetrator name:
                  CASE WHEN ip.PerpetratorServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
                       WHEN ip.PerpetratorUserDetailsId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
@@ -354,7 +351,48 @@ class SQLGenerator:
                  CASE WHEN iv.VictimServiceUserId IS NOT NULL THEN su_victim.FirstName + ' ' + su_victim.Surname
                       WHEN iv.VictimUserDetailsId IS NOT NULL THEN ud_victim.FirstName + ' ' + ud_victim.LastName
                       ELSE iv.Victim END AS VictimName
+
+            2. BNR_SafeguardingPersonAtRiskVictims (alias e.g. prv):
+               - LEFT JOIN to BNR_Service_User (using PersonAtRiskServiceUserId)
+               - LEFT JOIN to BNR_UserDetails (using PersonAtRiskUserDetailId)
+               - CASE statement:
+                 CASE WHEN prv.PersonAtRiskServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
+                      WHEN prv.PersonAtRiskUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                      ELSE prv.PersonAtRiskOtherName END AS PersonAtRiskName
+
+            3. BNR_SafeguardingPersonCausingPerpetrator (alias e.g. pcp):
+               - LEFT JOIN to BNR_Service_User (using PersonCausingServiceUserId)
+               - LEFT JOIN to BNR_UserDetails (using PersonCausingUserDetailId)
+               - CASE statement:
+                 CASE WHEN pcp.PersonCausingServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
+                      WHEN pcp.PersonCausingUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                      ELSE pcp.PersonCausingOtherName END AS PersonCausingName
+
+            4. BNR_SafeguardingInvestigationPersonAtRiskVictim (alias e.g. ipv):
+               - LEFT JOIN to BNR_Service_User (using InvestigationReportServiceUserId)
+               - LEFT JOIN to BNR_UserDetails (using InverstigationReportUserDetailId)
+               - CASE statement:
+                 CASE WHEN ipv.InvestigationReportServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
+                      WHEN ipv.InverstigationReportUserDetailId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                      ELSE ipv.InvestigationReportOtherName END AS PersonAtRiskName
+
+            5. BNR_CareConcernRelatedToPersons (alias e.g. ccr):
+               - LEFT JOIN to BNR_Service_User (using RelatedServiceUserId)
+               - LEFT JOIN to BNR_UserDetails (using RelatedUserDetailsId)
+               - CASE statement:
+                 CASE WHEN ccr.RelatedServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
+                      WHEN ccr.RelatedUserDetailsId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                      ELSE ccr.OtherRelatedPersonName END AS RelatedPersonName
+
             DO NOT just select FirstName and Surname from BNR_Service_User. You MUST include both joins and the CASE statement. Ensure you use the correct string concatenation operator for the dialect (e.g., + for SQL Server).
+
+            AGGREGATION RULE (CRITICAL FOR 1-TO-MANY LISTINGS):
+            If the question asks to list parent entities (such as care concerns, safeguarding reports, or incidents) along with the "people involved", "victims", or "perpetrators", doing a direct JOIN will cause duplicate rows or cut off the TOP/LIMIT results (since one entity can have multiple people).
+            To prevent this, you MUST aggregate the names into a single string using STRING_AGG (or the dialect's concatenation function) and group by the other selected parent columns:
+            - SQL Server: STRING_AGG(your_case_expression, ', ') AS PeopleInvolved
+            - PostgreSQL: STRING_AGG(your_case_expression, ', ') AS PeopleInvolved
+            - SQLite: GROUP_CONCAT(your_case_expression, ', ') AS PeopleInvolved
+            - MySQL: GROUP_CONCAT(your_case_expression SEPARATOR ', ') AS PeopleInvolved
 
             =====================
             COLUMN SELECTION RULES

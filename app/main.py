@@ -588,12 +588,20 @@ async def get_schema_report(session_id: str):
         from app.training.indexer import Indexer
         indexer = Indexer()
         try:
-            scroll_results = indexer.client.scroll(
-                collection_name=ctx.qdrant_collection,
-                limit=500,
-                with_payload=True
-            )
-            return [r.payload for r in scroll_results[0]]
+            report = []
+            next_offset = None
+            while True:
+                scroll_results = indexer.client.scroll(
+                    collection_name=ctx.qdrant_collection,
+                    limit=100,
+                    with_payload=True,
+                    offset=next_offset
+                )
+                records, next_offset = scroll_results
+                report.extend([r.payload for r in records])
+                if not next_offset:
+                    break
+            return report
         except Exception as e:
             logger.error(f"Failed to fetch schema report from Qdrant: {e}")
             
@@ -1196,8 +1204,8 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
  
     memory_key = str(body.thread_id) if body.thread_id else body.session_id
     mem = get_session_memory(memory_key)
-    # conversation_context = mem.get_context_for_prompt()
-    conversation_context = ""
+    conversation_history = mem.get_context_for_prompt()
+    retry_feedback = ""
 
  
     max_retries = 3
@@ -1273,7 +1281,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 collection_name=ctx.qdrant_collection,
                 question=question,
                 dialect=ctx.dialect,
-                conversation_context="",
+                conversation_context=conversation_history,
                 resolved_user_table=resolved_user_table,
                 resolved_last_name_column=resolved_last_name_col,   # NEW
                 has_user_reference=corrected.has_user_reference,
@@ -1293,7 +1301,10 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 )
                 return ChronoChatResponse(mode="empty", text_summary=no_data_text, page=1, pages_total=1)
             logger.info("After plan")
-            gen_result = await generator.generate(plan, conversation_context, ctx.qdrant_collection)
+            full_context = conversation_history
+            if retry_feedback:
+                full_context += f"\n\n=====================\nRETRY FEEDBACK\n=====================\n{retry_feedback}"
+            gen_result = await generator.generate(plan, full_context, ctx.qdrant_collection)
             logger.info(f"Generated Result: {gen_result}")
             # Promote polar questions to existence intent
             q_clean = question.strip().lower()
@@ -1314,7 +1325,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
             val_result = validator.validate(gen_result.sql, ctx.dialect)
             if not val_result.is_valid:
                 last_error = "; ".join(val_result.errors)
-                conversation_context += f"\n[PREVIOUS ATTEMPT FAILED: {last_error}. Fix and try again.]"
+                retry_feedback += f"\n[PREVIOUS ATTEMPT FAILED: {last_error}. Fix and try again.]"
                 continue
  
             pre_filter_sql = val_result.sql
@@ -1440,7 +1451,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
  
             if result.error:
                 last_error = result.error
-                conversation_context += (
+                retry_feedback += (
                     f"\n[SQL EXECUTION ERROR on: {pre_filter_sql}\n"
                     f"\nCheck if given all selected columns are from appropriate table and all columns are exist in the appropriate alias table"
                     f"Error: {last_error}. Rewrite the SQL.]{JSON_REMINDER}"
@@ -1516,7 +1527,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
                 return ChronoChatResponse(mode="empty", text_summary=system_down_text)
 
             logger.error(f"[chronoplot] Pipeline error (attempt {attempt + 1}): {exc}", exc_info=True)
-            conversation_context += f"\n[ERROR: {last_error}. Try a different approach.]{JSON_REMINDER}"
+            retry_feedback += f"\n[ERROR: {last_error}. Try a different approach.]{JSON_REMINDER}"
  
     # if zero_rows_on_last_attempt:
     #     no_data_text = await formatter._humanize_no_data(question)

@@ -44,44 +44,77 @@ class QueryExecutor:
         return await asyncio.to_thread(self._execute_sync, engine, sql)
 
     def _validate_tables_columns(self, engine: Engine, sql: str) -> Optional[str]:
-        """Pre-validate tables and columns exist before full execution."""
+        """Pre-validate tables and columns exist before full execution.
+        
+        Uses sqlglot AST parsing instead of regex to correctly extract
+        table names, preserving case and handling CTEs, subqueries, and
+        schema-qualified names without false positives.
+        """
         from sqlalchemy import inspect
+        import sqlglot
+        from sqlglot import exp
+
+        DIALECT_MAP = {
+            "sqlite": "sqlite",
+            "postgresql": "postgres",
+            "mysql": "mysql",
+            "sqlserver": "tsql",
+        }
+
         inspector = inspect(engine)
         try:
-            # Simple heuristic: extract FROM/JOIN tables, SELECT columns
             sql_lower = sql.lower()
             if 'from' not in sql_lower:
                 return "No FROM clause found"
 
-# Extract qualified table names and unqualified tables
-            import re
-            
-            # Strip quotes/brackets for simple parsing
-            clean_sql = re.sub(r'[\[\]"`()]', '', sql_lower)
-            
-            # Find schema.table patterns
-            qualified = re.findall(r'\b(\w+)\.(\w+)\b', clean_sql)
-            table_pairs = [(schema, table) for schema, table in qualified]
-            
-            # Simple unqualified tables after FROM/JOIN
-            unqual = re.findall(r'\b(?:from|join)\s+(\w+)', clean_sql)
-            
-            all_validations = table_pairs + [(None, t) for t in set(unqual)]
-            
-            validated_tables = []
-            for schema, tname in set(all_validations):
-                try:
-                    if not inspector.has_table(tname, schema):
-                        continue  # Not a real table (e.g. alias.column)
-                    cols = inspector.get_columns(tname, schema)
-                    if not cols:
-                        return f"Table not found: {schema + '.' + tname if schema else tname}"
-                    validated_tables.append(schema + '.' + tname if schema else tname)
-                except Exception as ex:
-                    return f"Cannot access table {schema + '.' + tname if schema else tname}: {str(ex)}"
-            
-            logger.info(f"Pre-validation passed for real tables: {validated_tables}")
+            # Parse with sqlglot to get an accurate AST
+            dialect_key = DIALECT_MAP.get(
+                getattr(self.settings, 'dialect', 'sqlserver'), 'tsql'
+            )
+            try:
+                tree = sqlglot.parse_one(sql, read=dialect_key)
+            except Exception:
+                # If AST parsing fails, skip pre-validation rather than blocking
+                logger.warning("AST parsing failed during pre-validation; skipping.")
+                return None
 
+            # Collect CTE names so we can exclude them from physical table checks
+            cte_names = set()
+            for cte_node in tree.find_all(exp.CTE):
+                if cte_node.alias:
+                    cte_names.add(cte_node.alias.lower())
+
+            # Extract all Table nodes from the AST (case-preserved)
+            validated_tables = []
+            for table_node in tree.find_all(exp.Table):
+                t_name = table_node.name  # case-preserved
+                if not t_name:
+                    continue
+
+                # Skip CTE references — they are not physical tables
+                if t_name.lower() in cte_names:
+                    continue
+
+                # Extract schema if present (e.g. dbo.BNR_Incidents → schema=dbo)
+                db_obj = table_node.args.get("db")
+                schema = str(db_obj) if db_obj else None
+
+                try:
+                    if not inspector.has_table(t_name, schema):
+                        continue  # Could be a function or alias
+                    cols = inspector.get_columns(t_name, schema)
+                    if not cols:
+                        return f"Table not found: {schema + '.' + t_name if schema else t_name}"
+                    validated_tables.append(
+                        schema + '.' + t_name if schema else t_name
+                    )
+                except Exception as ex:
+                    return (
+                        f"Cannot access table "
+                        f"{schema + '.' + t_name if schema else t_name}: {str(ex)}"
+                    )
+
+            logger.info(f"Pre-validation passed for real tables: {validated_tables}")
             return None
         except Exception as e:
             return f"Validation failed: {str(e)}"
@@ -142,7 +175,9 @@ class QueryExecutor:
         """Convert non-JSON-serializable values to strings."""
         result = {}
         for k, v in row.items():
-            if v is None or isinstance(v, (int, float, bool, str)):
+            if pd.isna(v):
+                result[k] = None
+            elif isinstance(v, (int, float, bool, str)):
                 result[k] = v
             else:
                 result[k] = str(v)
