@@ -275,7 +275,7 @@ class SQLFilterVerifier:
                 node = node.parent
 
             if not in_subquery:
-                outer_aliases.add(alias)
+                outer_aliases.add(alias.lower() if isinstance(alias, str) else alias)
 
         logger.debug(f"[soft-delete] Outer scope aliases: {outer_aliases}")
         return outer_aliases
@@ -501,6 +501,10 @@ class SQLFilterVerifier:
 
         order = tree.find(exp.Order)
         if order is None:
+            return sql
+
+        # If SELECT * is present, all columns are already included — skip
+        if any(isinstance(sel_expr, exp.Star) for sel_expr in select_node.expressions):
             return sql
 
         # Collect existing SELECT column expressions as normalised SQL strings

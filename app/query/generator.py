@@ -60,6 +60,7 @@ def fix_distinct_order_by(sql: str) -> str:
 
     If SELECT DISTINCT is present and ORDER BY references columns not in the
     SELECT list, those columns are appended to the SELECT list automatically.
+    Skips when SELECT * is used since * already covers all columns.
     """
     import sqlglot
     from sqlglot import exp
@@ -80,6 +81,10 @@ def fix_distinct_order_by(sql: str) -> str:
 
     order = tree.find(exp.Order)
     if order is None:
+        return sql
+
+    # If SELECT * is present, all columns are already included — skip
+    if any(isinstance(sel_expr, exp.Star) for sel_expr in select_node.expressions):
         return sql
 
     # Collect existing SELECT column expressions as normalised SQL strings
