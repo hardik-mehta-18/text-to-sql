@@ -333,6 +333,24 @@ class SQLGenerator:
             Status, employment, active/inactive, login → always use BNR_UserDetails.
             BNR_AboutMeServiceUser is for care profiles, NOT status.
 
+            ── RULE 16: INCIDENT VICTIMS & PERPETRATORS NAME SELECTION ─────
+            When querying for victims or perpetrators of an incident, the text columns
+            ("Victim" and "Perpetrator") in BNR_IncidentVictim and BNR_IncidentPerpetrator 
+            may be NULL because actual names are stored in BNR_Service_User or BNR_UserDetails.
+            CRITICAL: Whenever you query BNR_IncidentVictim or BNR_IncidentPerpetrator, you MUST unconditionally:
+            1. LEFT JOIN to BNR_Service_User (using VictimServiceUserId or PerpetratorServiceUserId)
+            2. LEFT JOIN to BNR_UserDetails (using VictimUserDetailsId or PerpetratorUserDetailsId)
+            3. Construct/select the name using EXACTLY this CASE WHEN expression:
+               - For perpetrator name:
+                 CASE WHEN ip.PerpetratorServiceUserId IS NOT NULL THEN su.FirstName + ' ' + su.Surname
+                      WHEN ip.PerpetratorUserDetailsId IS NOT NULL THEN ud.FirstName + ' ' + ud.LastName
+                      ELSE ip.Perpetrator END AS PerpetratorName
+               - For victim name:
+                 CASE WHEN iv.VictimServiceUserId IS NOT NULL THEN su_victim.FirstName + ' ' + su_victim.Surname
+                      WHEN iv.VictimUserDetailsId IS NOT NULL THEN ud_victim.FirstName + ' ' + ud_victim.LastName
+                      ELSE iv.Victim END AS VictimName
+            DO NOT just select FirstName and Surname from BNR_Service_User. You MUST include both joins and the CASE statement. Ensure you use the correct string concatenation operator for the dialect (e.g., + for SQL Server).
+
             =====================
             COLUMN SELECTION RULES
             =====================
@@ -386,7 +404,7 @@ class SQLGenerator:
             =====================
             RESPONSE INTENT
             =====================
-            • "existence" → "is there", "do we have", "is X on/active/available"
+            • "existence" → user asks IF data exists or yes/no questions: "is there...", "do we have...", "is X on/active/available", "is/was [person] part of...", "did/does [person] have..."
             • "count"     → "how many", "total", "count of"
             • "summary"   → "summarize", "overview"
             • "data"      → "show me", "list", "get"
@@ -1345,6 +1363,12 @@ class SQLGenerator:
             sql = data.get("sql", "").strip().rstrip(";")
             chat_response = data.get("chat_response", "").strip()
             response_intent = data.get("response_intent", "data").strip()
+            # Promote polar questions to existence intent
+            q_clean = plan.question.strip().lower()
+            is_polar = any(q_clean.startswith(w) for w in ["is ", "was ", "are ", "do ", "does ", "did ", "has ", "have ", "can ", "could ", "is_", "was_"])
+            if is_polar and response_intent == "data":
+                response_intent = "existence"
+                logger.info(f"[generator] Promoted polar question to 'existence' response intent.")
             explanation = data.get("reason", data.get("explanation", ""))
             if chat_response and not sql:
                 logger.info(f"Chat intent detected: {explanation}")

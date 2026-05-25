@@ -53,7 +53,13 @@ class SQLFilterVerifier:
         for table in expression.find_all(exp.Table):
             t_name  = table.name.lower()
             t_alias = table.alias if table.alias else t_name
-            tables_in_query.append({"name": t_name, "alias": t_alias, "expression": table})
+            
+            is_left_join = False
+            parent = table.parent
+            if isinstance(parent, exp.Join) and parent.side in ("LEFT", "RIGHT"):
+                is_left_join = True
+                
+            tables_in_query.append({"name": t_name, "alias": t_alias, "expression": table, "is_left_join": is_left_join})
 
         logger.info(f"Tables in query: {[t['name'] for t in tables_in_query]}")
 
@@ -65,6 +71,19 @@ class SQLFilterVerifier:
             t for t in tables_in_query
             if t["alias"] in outer_scope_aliases
         ]
+        
+        # Sort so that:
+        # 1. Non-left-joined tables (primary or INNER JOIN) are prioritized.
+        # 2. Person/lookup tables (like BNR_Service_User or BNR_UserDetails) are deprioritized
+        #    relative to business entity tables to prevent incorrect left-join filtering.
+        def get_table_priority(table_info):
+            is_left = 1 if table_info["is_left_join"] else 0
+            t_name_norm = table_info["name"].lower().replace("_", "").replace(" ", "")
+            is_person_lookup = 1 if ("serviceuser" in t_name_norm or "userdetails" in t_name_norm) else 0
+            return (is_left, is_person_lookup)
+
+        outer_tables_in_query.sort(key=get_table_priority)
+
 
         existing_tables_alias_map = {t["name"]: t["alias"] for t in outer_tables_in_query}
 
@@ -191,10 +210,37 @@ class SQLFilterVerifier:
                 condition_str = f"{t_alias}.{is_deleted_col} = 0"
                 try:
                     cond_expr = parse_one(condition_str)
-                    expression = expression.where(cond_expr, copy=False)
-                    logger.info(
-                        f"[soft-delete] Injected '{condition_str}' for table '{t_name}'"
-                    )
+                    
+                    is_joined = False
+                    for join in expression.find_all(exp.Join):
+                        j_alias = ""
+                        if join.this:
+                            if join.this.alias:
+                                j_alias = str(join.this.alias)
+                            elif isinstance(join.this, exp.Table):
+                                j_alias = join.this.name
+                        
+                        if j_alias and j_alias.lower() == t_alias.lower():
+                            is_joined = True
+                            existing_on = join.args.get("on")
+                            if existing_on:
+                                new_on = exp.and_(existing_on, cond_expr)
+                                join.set("on", new_on)
+                                logger.info(
+                                    f"[soft-delete] Injected '{condition_str}' to JOIN ON clause of '{t_name}'"
+                                )
+                            else:
+                                join.set("on", cond_expr)
+                                logger.info(
+                                    f"[soft-delete] Set JOIN ON clause of '{t_name}' to '{condition_str}'"
+                                )
+                            break
+                    
+                    if not is_joined:
+                        expression = expression.where(cond_expr, copy=False)
+                        logger.info(
+                            f"[soft-delete] Injected '{condition_str}' for table '{t_name}' (primary)"
+                        )
                 except Exception as e:
                     logger.error(
                         f"[soft-delete] Failed to inject for '{t_name}': {e}"

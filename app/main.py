@@ -1295,6 +1295,12 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
             logger.info("After plan")
             gen_result = await generator.generate(plan, conversation_context, ctx.qdrant_collection)
             logger.info(f"Generated Result: {gen_result}")
+            # Promote polar questions to existence intent
+            q_clean = question.strip().lower()
+            is_polar = any(q_clean.startswith(w) for w in ["is ", "was ", "are ", "do ", "does ", "did ", "has ", "have ", "can ", "could ", "is_", "was_"])
+            if is_polar and gen_result.response_intent == "data":
+                gen_result.response_intent = "existence"
+                logger.info(f"[main] Promoted polar question to 'existence' response intent.")
             if gen_result.chat_response and not gen_result.sql:
                 save_message(body.thread_id, "assistant", gen_result.chat_response)
                 save_user_history(
