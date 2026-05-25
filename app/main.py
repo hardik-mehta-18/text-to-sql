@@ -304,7 +304,7 @@ async def connect_db(
     connection_string: Optional[str] = Form(None),
     db_file: Optional[UploadFile] = File(None),
 ):
-    """Connect a database. Accepts file upload (SQLite) or connection string."""
+    """Connect a database. Accepts file upload (SQLite) or connection string in main branch."""
     session_id = str(uuid.uuid4())
     print(connection_string)
     print(db_file)
