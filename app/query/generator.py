@@ -160,6 +160,77 @@ def enforce_explicit_limit(sql: str, question: str, dialect: str = "sqlserver") 
     return sql
 
 
+def remove_unrequested_ids(sql: str, question: str, dialect: str = "tsql") -> str:
+    """Remove ID and foreign key columns from the SELECT clause unless explicitly requested in the question."""
+    import re
+    import sqlglot
+    from sqlglot import exp
+
+    # Check if question explicitly requests IDs
+    id_patterns = r'\b(id|ids|identifier|key|guid|uuid)\b'
+    if re.search(id_patterns, question, re.IGNORECASE):
+        logger.info("[remove_unrequested_ids] ID requested in question. Keeping IDs.")
+        return sql
+
+    try:
+        dialect_map = {
+            "sqlite": "sqlite",
+            "postgresql": "postgres",
+            "mysql": "mysql",
+            "sqlserver": "tsql",
+            "tsql": "tsql",
+        }
+        dialect_key = dialect_map.get(dialect.lower(), "tsql")
+        tree = sqlglot.parse_one(sql, read=dialect_key)
+    except Exception as e:
+        logger.warning(f"[remove_unrequested_ids] Failed to parse SQL: {e}")
+        return sql
+
+    # Find the main SELECT node
+    select_node = tree.find(exp.Select)
+    if not select_node:
+        return sql
+
+    # Helper to check if an expression is an ID/FK column or alias
+    def is_id_expression(expr) -> bool:
+        # If it's an alias, check the alias name and the wrapped expression
+        if isinstance(expr, exp.Alias):
+            alias_name = expr.text("alias").lower()
+            if alias_name == "id" or alias_name.endswith("id"):
+                return True
+            # Also check the inner expression
+            return is_id_expression(expr.this)
+        
+        # If it's a raw column, check its name
+        if isinstance(expr, exp.Column):
+            col_name = expr.name.lower()
+            return col_name == "id" or col_name.endswith("id")
+        
+        return False
+
+    # Filter expressions
+    new_expressions = []
+    removed_any = False
+    
+    # We first count how many non-ID expressions we have
+    non_id_count = sum(1 for expr in select_node.expressions if not is_id_expression(expr))
+    
+    for expr in select_node.expressions:
+        if is_id_expression(expr):
+            # Only remove if we have at least one non-ID column remaining
+            if non_id_count > 0:
+                logger.info(f"[remove_unrequested_ids] Removing ID column/alias: {expr.sql(dialect=dialect_key)}")
+                removed_any = True
+                continue
+        new_expressions.append(expr)
+        
+    if removed_any:
+        select_node.set("expressions", new_expressions)
+        return tree.sql(dialect=dialect_key)
+        
+    return sql
+
+
 class SQLGenerator:
     """Generates dialect-aware SQL from a query plan using Gemini."""
 
@@ -398,8 +469,8 @@ class SQLGenerator:
             COLUMN SELECTION RULES
             =====================
             • Select 3–6 human-readable columns relevant to the question.
-            • NEVER select: Id/FK columns, IsDeleted/IsActive flags, timestamps,
-            or DATE columns unless the user explicitly asks for a date.
+            • ⛔ NEVER select any ID, key, primary key, or foreign key columns in the SELECT clause (e.g. columns named 'Id', ending with 'Id', 'UserId', 'SiteId', 'CareConcernId', etc.) unless the user's question explicitly asks for an ID or key.
+            • ⛔ NEVER select: IsDeleted/IsActive flags, timestamps, or DATE columns unless the user explicitly asks for a date.
             • NEVER use SELECT * unless the user literally writes "select *".
             • For charts/grouping: select the dimension column + the metric only.
             Never select free-text paragraph columns for charting.
@@ -463,7 +534,7 @@ class SQLGenerator:
             =====================
             FINAL CHECK (run before returning)
             =====================
-            ☐ No Id/FK column in SELECT
+            ☐ No Id/FK column in SELECT (absolutely NO column ending in 'Id' or named 'Id' in SELECT list unless requested)
             ☐ No date/datetime column in SELECT (unless user asked for it)
             ☐ SELECT DISTINCT on every SELECT
             ☐ ORDER BY columns exist in SELECT list
@@ -1425,6 +1496,7 @@ class SQLGenerator:
             sql = fix_result.fixed_sql
 
             sql = expand_boolean_conditions(sql)
+            sql = remove_unrequested_ids(sql, plan.question, plan.dialect)
             sql = ensure_distinct(sql)
             sql = fix_distinct_order_by(sql)
             sql = enforce_explicit_limit(sql, plan.question, plan.dialect)
