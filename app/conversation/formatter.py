@@ -59,8 +59,8 @@ def _parse_and_format_date(value: Any) -> Any:
     - Strings with no digit cluster that looks date-like are skipped quickly.
     - Any parse failure silently returns the original value.
 
-    dayfirst=True ensures ambiguous dates like "01/02/2024" are read as
-    01-Feb-2024 (dd/mm) rather than Jan-02-2024 (mm/dd).
+    If the string starts with a 4-digit year (e.g., YYYY-MM-DD), yearfirst=True and
+    dayfirst=False are used. Otherwise, dayfirst=True handles international dd/mm format.
     """
     if value is None:
         return value
@@ -87,7 +87,12 @@ def _parse_and_format_date(value: Any) -> Any:
         return value
 
     try:
-        dt = dateutil_parser.parse(raw, dayfirst=True)
+        is_year_first = bool(re.match(r'^\d{4}', raw))
+        dt = dateutil_parser.parse(
+            raw,
+            dayfirst=not is_year_first,
+            yearfirst=is_year_first
+        )
         return dt.strftime("%d-%m-%Y")
     except Exception:
         # Not a recognisable date — return the original value untouched

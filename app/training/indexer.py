@@ -113,6 +113,36 @@ class Indexer:
             logger.info(f"Created collection + payload index: {collection}")
         else:
             logger.info(f"Collection already exists: {collection}")
+            # Ensure payload index on table_name exists so deletes and queries work
+            try:
+                self.client.create_payload_index(
+                    collection_name=collection,
+                    field_name="table_name",
+                    field_schema="keyword",
+                )
+            except Exception as e:
+                logger.warning(f"Could not create table_name payload index (might already exist): {e}")
+
+            # Delete old points for the tables being indexed to avoid duplicate entries
+            table_names = [t.table_name for t in tables]
+            from qdrant_client.models import Filter, FieldCondition, MatchAny, FilterSelector
+            try:
+                self.client.delete(
+                    collection_name=collection,
+                    points_selector=FilterSelector(
+                        filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="table_name",
+                                    match=MatchAny(any=table_names),
+                                )
+                            ]
+                        )
+                    ),
+                )
+                logger.info(f"Deleted old points for tables to prevent duplicates: {table_names}")
+            except Exception as e:
+                logger.warning(f"Failed to delete old points for tables: {e}")
 
         reverse_fk_map: dict[str, list[dict]] = {}
         for table in tables:

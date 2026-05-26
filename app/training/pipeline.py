@@ -470,7 +470,7 @@ class TrainingPipeline:
           3. Upsert the new vectors (indexer only creates collection if missing)
           4. Merge new descriptions back into the full cache
         """
-        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        from qdrant_client.models import Filter, FieldCondition, MatchAny, FilterSelector
  
         total = len(tables_to_update)
         table_names = [t.table_name for t in tables_to_update]
@@ -485,15 +485,27 @@ class TrainingPipeline:
  
         # Step 1 — Delete existing points for only these tables
         try:
+            # Ensure payload index exists so delete works
+            try:
+                self.indexer.client.create_payload_index(
+                    collection_name=qdrant_collection,
+                    field_name="table_name",
+                    field_schema="keyword",
+                )
+            except Exception as pe:
+                logger.warning(f"[partial_update] Could not create payload index: {pe}")
+
             self.indexer.client.delete(
                 collection_name=qdrant_collection,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="table_name",
-                            match=MatchAny(any=table_names),
-                        )
-                    ]
+                points_selector=FilterSelector(
+                    filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="table_name",
+                                match=MatchAny(any=table_names),
+                            )
+                        ]
+                    )
                 ),
             )
             logger.info(f"[partial_update] Deleted old points for: {table_names}")
