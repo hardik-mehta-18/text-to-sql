@@ -3,10 +3,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import google.generativeai as genai
-
 from app.config import get_settings
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +52,12 @@ Example Output:
 """
 
         try:
-            response = await get_key_manager().generate_content(
+            raw_text = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=500,
-                ),
+                temperature=0.1,
+                max_output_tokens=500,
+                label="existence_checker"
             )
-            raw_text = response.text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
             if raw_text.startswith("```"): raw_text = raw_text[3:]
             if raw_text.endswith("```"): raw_text = raw_text[:-3]

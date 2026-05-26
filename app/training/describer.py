@@ -7,11 +7,9 @@ import asyncio
 import logging
 from typing import List
 
-import google.generativeai as genai
-
 from app.config import get_settings
 from app.training.schema_extractor import TableInfo
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -96,15 +94,12 @@ class Describer:
         """
 
         try:
-            km = get_key_manager()
-            response = await km.generate_content(
+            description = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=200,
-                ),
+                temperature=0.1,
+                max_output_tokens=200,
+                label="describer"
             )
-            description = response.text.strip()
             if len(description) > 500:
                 description = description[:497] + "..."
             return description

@@ -17,9 +17,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-import google.generativeai as genai
-
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -168,15 +166,12 @@ ABSOLUTE RULES:
 Return ONLY the fixed SQL query, nothing else."""
 
     try:
-        response = await get_key_manager().generate_content(
+        fixed = await generate_with_fallback(
             prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.0,
-                max_output_tokens=2048,
-            ),
+            temperature=0.0,
+            max_output_tokens=2048,
+            label="sql_column_fixer"
         )
-
-        fixed = response.text.strip()
 
         # Strip accidental markdown fences
         fixed = re.sub(r"^```[a-zA-Z]*\n?", "", fixed).strip()

@@ -1,7 +1,6 @@
 # app/query/keyword_decomposer.py
 import json
-import google.generativeai as genai
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 
 async def decompose_to_keywords(question: str) -> list[str]:
     """Lightweight LLM call — returns 4-6 search keywords from the question."""
@@ -12,11 +11,13 @@ async def decompose_to_keywords(question: str) -> list[str]:
         "Return ONLY a JSON array of strings. No explanation.\n\n"
         f"Question: {question}"
     )
-    response = await get_key_manager().generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(temperature=0, max_output_tokens=100),
-    )
     try:
-        return json.loads(response.text.strip())
+        resp_str = await generate_with_fallback(
+            prompt,
+            temperature=0,
+            max_output_tokens=100,
+            label="keyword_decomposer"
+        )
+        return json.loads(resp_str)
     except Exception:
         return [question]   # fallback: full question as single keyword

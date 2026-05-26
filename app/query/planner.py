@@ -5,11 +5,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import google.generativeai as genai
-
 from app.config import get_settings
 from app.training.indexer import Indexer
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 from app.exceptions import QueryError
 
 logger = logging.getLogger(__name__)
@@ -140,14 +138,13 @@ Return ONLY the final message to the user.
 """
 
     try:
-        response = await get_key_manager().generate_content(
+        resp_str = await generate_with_fallback(
             prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.7,
-                max_output_tokens=150,
-            ),
+            temperature=0.7,
+            max_output_tokens=150,
+            label="planner_clarify"
         )
-        return response.text.strip()
+        return resp_str
 
     except Exception as e:
         logger.warning(f"LLM multi-table clarification failed: {e}")
@@ -418,14 +415,12 @@ MANDATORY:
 
         response_text = None
         try:
-            response = await get_key_manager().generate_content(
+            response_text = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.0,
-                    max_output_tokens=512,
-                ),
+                temperature=0.0,
+                max_output_tokens=512,
+                label="planner_intent"
             )
-            response_text = response.text.strip()
             for prefix in ("```json", "```"):
                 if response_text.startswith(prefix):
                     response_text = response_text[len(prefix):]

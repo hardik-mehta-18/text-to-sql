@@ -109,6 +109,8 @@ async def build_enriched_schema(
     for t in filtered:
         table_full = f"{t.get('schema_name', 'dbo')}.{t['table_name']}"
         lines.append(f"TABLE: {table_full}  (ROWS: {t.get('row_count', 0):,})")
+        if t.get('description'):
+            lines.append(f"DESCRIPTION: {t['description']}")
         lines.append("ALLOWED COLUMNS (exact case-sensitive names):")
         
         for c in t.get('columns', []):

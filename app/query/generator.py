@@ -4,11 +4,10 @@ import json
 import logging
 from dataclasses import dataclass
 
-import google.generativeai as genai
 from app.query.sql_column_fixer import fix_sql_columns
 from app.config import get_settings
 from app.query.planner import QueryPlan, TableContext
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 from app.query.enrich_schema import build_enriched_schema
 from app.enums.registry import get_relevant_enums, build_enum_prompt_block
 import re
@@ -1527,15 +1526,12 @@ class SQLGenerator:
         # """
         response_text = None
         try:
-            response = await get_key_manager().generate_content(
+            response_text = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.0,
-                    max_output_tokens=self.settings.gemini.max_tokens,
-                    response_mime_type="application/json",
-                ),
+                temperature=0.0,
+                max_output_tokens=self.settings.gemini.max_tokens,
+                label="generator"
             )
-            response_text = response.text.strip()
 
             # Model sometimes reasons out loud before the JSON block.
             # Grab the first { ... } block regardless of what surrounds it.

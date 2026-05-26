@@ -57,6 +57,18 @@ class Indexer:
                 logger.info(f"Deleted collection: {collection_name}")
         except Exception as e:
             logger.warning(f"Failed to delete collection {collection_name}: {e}")
+    def _load_overrides(self) -> Dict[str, str]:
+        override_file = os.path.join(os.path.dirname(__file__), "descriptions_override.json")
+        if os.path.exists(override_file):
+            try:
+                with open(override_file, "r") as f:
+                    overrides = json.load(f)
+                    logger.info(f"Loaded {len(overrides)} custom table description overrides.")
+                    return overrides
+            except Exception as e:
+                logger.warning(f"Failed to load table description overrides: {e}")
+        return {}
+
     # --------------------------------------------------------
     async def index(
         self,
@@ -66,6 +78,12 @@ class Indexer:
         dialect: str,
         qdrant_collection: str
     ):
+        # Apply custom overrides
+        overrides = self._load_overrides()
+        print(f"Applying {len(overrides)} description overrides")
+        for k, v in overrides.items():
+            descriptions[k] = v
+
         db_hash = build_db_hash(db_key)
         collection = qdrant_collection
 

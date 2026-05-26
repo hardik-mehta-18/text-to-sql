@@ -3,9 +3,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
  
-import google.generativeai as genai
- 
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
  
 logger = logging.getLogger(__name__)
  
@@ -67,14 +65,12 @@ Respond ONLY with this JSON (no markdown, no explanation):
 }}
 """
         try:
-            response = await get_key_manager().generate_content(
+            raw = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.0,
-                    max_output_tokens=256,
-                ),
+                temperature=0.0,
+                max_output_tokens=256,
+                label="spelling_corrector_json"
             )
-            raw = response.text.strip()
  
             # Strip markdown fences if present
             for fence in ("```json", "```"):
@@ -130,11 +126,12 @@ USER QUESTION:
 Return ONLY the corrected question as plain text. No explanation. No quotes. No JSON.
 """
         try:
-            response = await get_key_manager().generate_content(
+            corrected = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=256),
+                temperature=0.0,
+                max_output_tokens=256,
+                label="spelling_corrector_fallback"
             )
-            corrected = response.text.strip()
             if not corrected or len(corrected) > len(question) * 3:
                 corrected = question
             return CorrectedQuestion(text=corrected, has_user_reference=False, user_entity_name=None)

@@ -4,12 +4,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-import google.generativeai as genai
 from dateutil import parser as dateutil_parser
 import json
 
 from app.config import get_settings
-from app.utils.gemini_key_manager import get_key_manager
+from app.utils.llm_provider import generate_with_fallback
 from app.utils.pii_vault import pii_vault
 
 logger = logging.getLogger(__name__)
@@ -492,14 +491,13 @@ Do NOT mention "SQL", "database errors", "max retries", "internal error", or any
     Return ONLY the final sentence. No preamble, no explanation."""
 
         try:
-            response = await get_key_manager().generate_content(
+            resp_str = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.2,
-                    max_output_tokens=80,
-                ),
+                temperature=0.2,
+                max_output_tokens=80,
+                label="formatter_existence_negative"
             )
-            return response.text.strip()
+            return resp_str
         except Exception:
             return "Based on the available data, the answer to your question appears to be no."
             
@@ -534,16 +532,14 @@ Do NOT mention "SQL", "database errors", "max retries", "internal error", or any
 
     async def _gemini_call(self, prompt: str, fallback: str) -> str:
         try:
-            response = await get_key_manager().generate_content(
+            return await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.7,       # slightly warmer for natural tone
-                    max_output_tokens=300,
-                ),
+                temperature=0.7,
+                max_output_tokens=300,
+                label="formatter_chat"
             )
-            return response.text.strip()
         except Exception as e:
-            logger.warning(f"Gemini formatter call failed: {e}")
+            logger.warning(f"Formatter LLM call failed: {e}")
             return fallback
 
 
@@ -689,14 +685,12 @@ Do not output markdown or backticks."""
 
         mapping = None
         try:
-            response = await get_key_manager().generate_content(
+            raw_text = await generate_with_fallback(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=1000,
-                ),
+                temperature=0.1,
+                max_output_tokens=1000,
+                label="formatter_columns_dynamic"
             )
-            raw_text = response.text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
             if raw_text.startswith("```"): raw_text = raw_text[3:]
             if raw_text.endswith("```"): raw_text = raw_text[:-3]
