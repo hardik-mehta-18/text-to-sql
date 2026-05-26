@@ -83,25 +83,25 @@ class Describer:
             Instructions:
             - You MUST incorporate the USER CONTEXT into the final description if provided.
             - Treat USER CONTEXT as ground truth business logic.
-            - Do NOT ignore or summarize away important rules from it.
+            - Do NOT ignore, omit, or summarize away important rules, associations, or joins from it.
 
-            Write 1-2 sentences optimized for semantic search:
+            Write a detailed description optimized for semantic search:
             - Business purpose + key entities (customers, orders, etc.)
             - Typical queries (sales totals, customer trends)
-            - Include 2-3 key columns + patterns (dates, IDs, amounts)
-
-            Max 150 chars. Concise, keyword-rich for vector embedding. Plain text.
+            - Include 2-3 key columns + join patterns (dates, IDs, amounts)
+            - Keep it descriptive and thorough (up to 150-200 words). Do not shrink it down excessively.
+            - Output plain text only, no markdown.
         """
 
         try:
             description = await generate_with_fallback(
                 prompt,
                 temperature=0.1,
-                max_output_tokens=200,
+                max_output_tokens=500,
                 label="describer"
             )
-            if len(description) > 500:
-                description = description[:497] + "..."
+            if len(description) > 2000:
+                description = description[:1997] + "..."
             return description
         except RuntimeError as e:
             # All keys exhausted
