@@ -1188,7 +1188,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
     """
     NL → SQL → response pipeline.
     Requires Authorization: Bearer <jwt> with UserType SuperAdmin(2) or Manager(4).
- 
+    Handle multiple string also
     """
     user_detail_id, user_type, jwt_payload = _cp_authorize(request)
     last_successful_sql = ""
