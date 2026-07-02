@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer
 import secrets
 from app.db.metadata_models import AppDBSession, User, UserSession, SavedModel, ChatThread, ChatThreadMessage, hash_password, verify_password
@@ -59,7 +59,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start background session cleanup task."""
+    """Start background session cleanup task and database keep-alive job."""
     # start_gdrive_sync_job()
     # yield
     # stop_gdrive_sync_job()
@@ -72,9 +72,45 @@ async def lifespan(app: FastAPI):
             if evicted:
                 logger.info(f"Session cleanup: removed {evicted} expired sessions")
 
-    task = asyncio.create_task(cleanup_loop())
+    async def database_keep_alive_loop():
+        # Delay initial keep-alive run slightly to let application start up smoothly
+        await asyncio.sleep(5)
+        while True:
+            logger.info("Executing database keep-alive ping...")
+            
+            # Ping Postgres database
+            db = None
+            try:
+                db = AppDBSession()
+                db.execute(sa_text("SELECT 1"))
+                logger.info("Keep-alive: Postgres database ping successful.")
+            except Exception as e:
+                logger.error(f"Keep-alive: Postgres database ping failed: {e}")
+            finally:
+                if db:
+                    db.close()
+                    
+            # Ping Qdrant database
+            try:
+                from qdrant_client import QdrantClient
+                q_client = QdrantClient(
+                    url=settings.qdrant.url,
+                    api_key=settings.qdrant.api_key,
+                    prefer_grpc=False,
+                )
+                q_client.get_collections()
+                logger.info("Keep-alive: Qdrant database ping successful.")
+            except Exception as e:
+                logger.error(f"Keep-alive: Qdrant database ping failed: {e}")
+
+            # Sleep for 24 hours (24 * 3600 seconds)
+            await asyncio.sleep(24 * 3600)
+
+    cleanup_task = asyncio.create_task(cleanup_loop())
+    keep_alive_task = asyncio.create_task(database_keep_alive_loop())
     yield
-    task.cancel()
+    cleanup_task.cancel()
+    keep_alive_task.cancel()
 
 
 app = FastAPI(
@@ -296,6 +332,57 @@ async def root():
     """Serve React frontend."""
     return FileResponse("frontend/dist/index.html")
 
+
+@app.get("/health")
+async def health(response: Response):
+    postgres_status = "healthy"
+    postgres_error = None
+    db = None
+    try:
+        db = AppDBSession()
+        db.execute(sa_text("SELECT 1"))
+    except Exception as e:
+        postgres_status = "unhealthy"
+        postgres_error = str(e)
+        logger.error(f"Health check: Postgres database ping failed: {e}")
+    finally:
+        if db:
+            db.close()
+
+    qdrant_status = "healthy"
+    qdrant_error = None
+    try:
+        from qdrant_client import QdrantClient
+        q_client = QdrantClient(
+            url=settings.qdrant.url,
+            api_key=settings.qdrant.api_key,
+            prefer_grpc=False,
+        )
+        q_client.get_collections()
+    except Exception as e:
+        qdrant_status = "unhealthy"
+        qdrant_error = str(e)
+        logger.error(f"Health check: Qdrant database ping failed: {e}")
+
+    overall_status = "ok"
+    if postgres_status == "unhealthy" or qdrant_status == "unhealthy":
+        overall_status = "unhealthy"
+        response.status_code = 503
+
+    return {
+        "status": overall_status,
+        "sessions": get_session_store().count(),
+        "databases": {
+            "postgres": {
+                "status": postgres_status,
+                "error": postgres_error
+            },
+            "qdrant": {
+                "status": qdrant_status,
+                "error": qdrant_error
+            }
+        }
+    }
 
 @app.post("/api/db/connect", response_model=ConnectResponse)
 async def connect_db(
@@ -780,9 +867,7 @@ async def update_model_metadata(model_id: int, body: UpdateModelMetadataRequest,
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "sessions": get_session_store().count()}
+
 
 class UserType(IntEnum):
     SuperAdmin  = 2
