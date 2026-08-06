@@ -175,8 +175,10 @@ def _openrouter_single_call(
     messages: List[Dict],
     temperature: float,
     max_tokens: int,
+    model: Optional[str] = None,
 ) -> str:
     """Make a single OpenRouter API call with a specific key."""
+    target_model = model if model is not None else OPENROUTER_MODEL
     resp = requests.post(
         OPENROUTER_API_URL,
         headers={
@@ -184,7 +186,7 @@ def _openrouter_single_call(
             "Content-Type": "application/json",
         },
         json={
-            "model": OPENROUTER_MODEL,
+            "model": target_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -203,21 +205,28 @@ async def openrouter_chat_completion(
     *,
     temperature: float = 0.3,
     max_tokens: int = 512,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Send a chat completion to OpenRouter with multi-key rotation.
     Rotates to the next key on rate-limit / quota errors.
     """
     global _openrouter_key_index, _openrouter_exhausted
 
-    keys = _init_openrouter_keys()
+    if api_key:
+        keys = [api_key]
+    else:
+        keys = _init_openrouter_keys()
+
     if not keys:
         raise RuntimeError("No OpenRouter API keys configured")
 
     async with _openrouter_lock:
         available = [i for i in range(len(keys)) if i not in _openrouter_exhausted]
         if not available:
-            logger.warning("All OpenRouter keys exhausted — resetting")
-            _openrouter_exhausted.clear()
+            if not api_key:
+                logger.warning("All OpenRouter keys exhausted — resetting")
+                _openrouter_exhausted.clear()
             available = list(range(len(keys)))
 
     last_exc: Optional[Exception] = None
@@ -236,12 +245,14 @@ async def openrouter_chat_completion(
 
         try:
             result = await asyncio.to_thread(
-                _openrouter_single_call, key, messages, temperature, max_tokens
+                _openrouter_single_call, key, messages, temperature, max_tokens, model
             )
             return result
         except Exception as exc:
             last_exc = exc
             if _is_quota_error(exc):
+                if api_key:
+                    raise
                 async with _openrouter_lock:
                     _openrouter_exhausted.add(key_index)
                     remaining = [i for i in range(len(keys)) if i not in _openrouter_exhausted]
@@ -271,6 +282,8 @@ async def gemini_chat_completion(
     *,
     temperature: float = 0.3,
     max_tokens: int = 512,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Send a chat completion to Gemini via the existing GeminiKeyManager.
 
@@ -291,14 +304,29 @@ async def gemini_chat_completion(
     prompt = "\n\n".join(parts)
 
     try:
-        km = get_key_manager()
-        response = await km.generate_content(
-            prompt,
-            generation_config=types.GenerateContentConfig(
+        if api_key:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            config = types.GenerateContentConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
-            ),
-        )
+            )
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model if model else "gemini-3.6-flash",
+                contents=prompt,
+                config=config
+            )
+        else:
+            km = get_key_manager()
+            response = await km.generate_content(
+                prompt,
+                generation_config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+                model_name=model,
+            )
         if response.text is None:
             raise RuntimeError("Gemini returned empty response (content blocked)")
         return response.text.strip()
@@ -315,8 +343,10 @@ def _groq_single_call(
     messages: List[Dict],
     temperature: float,
     max_tokens: int,
+    model: Optional[str] = None,
 ) -> str:
     """Make a single Groq API call with a specific key."""
+    target_model = model if model is not None else GROQ_MODEL
     resp = requests.post(
         GROQ_API_URL,
         headers={
@@ -324,7 +354,7 @@ def _groq_single_call(
             "Content-Type": "application/json",
         },
         json={
-            "model": GROQ_MODEL,
+            "model": target_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -343,21 +373,28 @@ async def groq_chat_completion(
     *,
     temperature: float = 0.3,
     max_tokens: int = 512,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Send a chat completion to Groq with multi-key rotation.
     Rotates to the next key on rate-limit / quota errors.
     """
     global _groq_key_index, _groq_exhausted
 
-    keys = _init_groq_keys()
+    if api_key:
+        keys = [api_key]
+    else:
+        keys = _init_groq_keys()
+
     if not keys:
         raise RuntimeError("No Groq API keys configured")
 
     async with _groq_lock:
         available = [i for i in range(len(keys)) if i not in _groq_exhausted]
         if not available:
-            logger.warning("All Groq keys exhausted — resetting")
-            _groq_exhausted.clear()
+            if not api_key:
+                logger.warning("All Groq keys exhausted — resetting")
+                _groq_exhausted.clear()
             available = list(range(len(keys)))
 
     last_exc: Optional[Exception] = None
@@ -376,12 +413,14 @@ async def groq_chat_completion(
 
         try:
             result = await asyncio.to_thread(
-                _groq_single_call, key, messages, temperature, max_tokens
+                _groq_single_call, key, messages, temperature, max_tokens, model
             )
             return result
         except Exception as exc:
             last_exc = exc
             if _is_quota_error(exc):
+                if api_key:
+                    raise
                 async with _groq_lock:
                     _groq_exhausted.add(key_index)
                     remaining = [i for i in range(len(keys)) if i not in _groq_exhausted]
@@ -411,19 +450,24 @@ def cerebras_chat_completion(
     *,
     temperature: float = 0.3,
     max_tokens: int = 512,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Send a chat completion to Cerebras. Raises RuntimeError on failure."""
-    if not CEREBRAS_API_KEY:
+    target_key = api_key if api_key else CEREBRAS_API_KEY
+    target_model = model if model else CEREBRAS_MODEL
+
+    if not target_key:
         raise RuntimeError("CEREBRAS_API_KEY not configured")
     try:
         resp = requests.post(
             CEREBRAS_API_URL,
             headers={
-                "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+                "Authorization": f"Bearer {target_key}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": CEREBRAS_MODEL,
+                "model": target_model,
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
@@ -444,130 +488,89 @@ def cerebras_chat_completion(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Unified 4-tier fallback: Gemini → OpenRouter → Cerebras → Groq
+#  Unified dynamic fallback loop: prioritized by sequence_order in database
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def llm_chat_completion(
     messages: List[Dict],
     *,
-    temperature: float = 0.3,
-    max_tokens: int = 512,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
     label: str = "llm",
 ) -> str:
-    """Reusable 4-tier fallback: Gemini → OpenRouter → Cerebras → Groq.
+    """Dynamic multi-tier fallback sequence executor.
 
     Args:
-        messages:    OpenAI-style message list [{"role": ..., "content": ...}].
-        temperature: Sampling temperature.
-        max_tokens:  Max response tokens.
-        label:       Log label to identify the caller (e.g. "planner", "generator").
+        messages:    OpenAI-style message list.
+        temperature: Sampling temperature override.
+        max_tokens:  Max response tokens override.
+        label:       Log label to identify the caller.
 
     Returns:
         The LLM response as a stripped string.
-
-    Raises:
-        RuntimeError: If all providers fail.
     """
+    from app.utils.llm_config_store import get_active_llm_configs
+
     prompt_tokens = _estimate_message_tokens(messages)
-    or_err = gemini_err = groq_err = cerebras_err = None
+    configs = await get_active_llm_configs()
 
-    # --- 1) Primary: Gemini (multi-key rotation) ---
-    try:
-        logger.info(f"{label}_attempt_gemini", extra={"prompt_tokens_est": prompt_tokens})
+    errors = {}
+    is_fallback = False
+
+    for idx, cfg in enumerate(configs):
+        provider = cfg["provider"]
+        model = cfg["model"]
+        target_temp = cfg["temperature"] if temperature is None else temperature
+        target_max_tokens = cfg["max_tokens"] if max_tokens is None else max_tokens
+        api_key = cfg.get("api_key")
+
+        logger.info(f"{label}_attempt_{provider}", extra={"prompt_tokens_est": prompt_tokens, "model": model})
         t0 = _time.time()
-        result = await gemini_chat_completion(
-            messages, temperature=temperature, max_tokens=max_tokens,
-        )
-        ms = (_time.time() - t0) * 1000
-        response_tokens = _estimate_tokens(result)
-        logger.info(f"{label}_method", extra={"method": "gemini", "latency_ms": round(ms, 1)})
-        track_llm_call(label, "gemini", model="gemini-key-manager", is_fallback=False,
-                       latency_ms=ms, prompt_tokens=prompt_tokens, response_tokens=response_tokens,
-                       total_tokens=prompt_tokens + response_tokens)
-        return result
-    except Exception as e:
-        gemini_err = e
-        logger.warning(f"{label}_gemini_failed", extra={"error": str(e), "fallback": "openrouter"})
-        track_llm_call(label, "gemini", model="gemini-key-manager", is_fallback=False,
-                       error=str(e), prompt_tokens=prompt_tokens)
 
-    #--- 2) Fallback: OpenRouter ---
-    or_keys = _init_openrouter_keys()
-    if or_keys:
         try:
-            logger.info(f"{label}_attempt_openrouter", extra={"prompt_tokens_est": prompt_tokens})
-            t0 = _time.time()
-            result = await openrouter_chat_completion(
-                messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            if provider == "gemini":
+                result = await gemini_chat_completion(
+                    messages, temperature=target_temp, max_tokens=target_max_tokens,
+                    model=model, api_key=api_key
+                )
+            elif provider == "openrouter":
+                result = await openrouter_chat_completion(
+                    messages, temperature=target_temp, max_tokens=target_max_tokens,
+                    model=model, api_key=api_key
+                )
+            elif provider == "cerebras":
+                result = await asyncio.to_thread(
+                    cerebras_chat_completion, messages,
+                    temperature=target_temp, max_tokens=target_max_tokens,
+                    model=model, api_key=api_key
+                )
+            elif provider == "groq":
+                result = await groq_chat_completion(
+                    messages, temperature=target_temp, max_tokens=target_max_tokens,
+                    model=model, api_key=api_key
+                )
+            else:
+                logger.warning(f"Unknown provider '{provider}' in database configuration. Skipping.")
+                continue
+
             ms = (_time.time() - t0) * 1000
             response_tokens = _estimate_tokens(result)
-            logger.info(f"{label}_method", extra={"method": "openrouter", "latency_ms": round(ms, 1)})
-            track_llm_call(label, "openrouter", model=OPENROUTER_MODEL, is_fallback=True, latency_ms=ms,
+            logger.info(f"{label}_method", extra={"method": provider, "latency_ms": round(ms, 1)})
+            track_llm_call(label, provider, model=model, is_fallback=is_fallback, latency_ms=ms,
                            prompt_tokens=prompt_tokens, response_tokens=response_tokens,
                            total_tokens=prompt_tokens + response_tokens)
             return result
+
         except Exception as e:
-            print(f"OpenRouter failed: {e}")
-            or_err = e
-            logger.warning(f"{label}_openrouter_failed", extra={"error": str(e), "fallback": "cerebras"})
-            track_llm_call(label, "openrouter", model=OPENROUTER_MODEL, is_fallback=True, error=str(e), prompt_tokens=prompt_tokens)
-    else:
-        logger.debug(f"{label}_openrouter_skipped (no keys)")
+            errors[provider] = str(e)
+            next_fallback = configs[idx + 1]["provider"] if idx + 1 < len(configs) else "none"
+            logger.warning(f"{label}_{provider}_failed", extra={"error": str(e), "fallback": next_fallback})
+            track_llm_call(label, provider, model=model, is_fallback=is_fallback, error=str(e),
+                           prompt_tokens=prompt_tokens)
+            is_fallback = True
 
-    # --- 3) Fallback: Cerebras ---
-    if CEREBRAS_API_KEY:
-        try:
-            logger.info(f"{label}_attempt_cerebras", extra={"prompt_tokens_est": prompt_tokens})
-            t0 = _time.time()
-            result = await asyncio.to_thread(
-                cerebras_chat_completion, messages,
-                temperature=temperature, max_tokens=max_tokens,
-            )
-            ms = (_time.time() - t0) * 1000
-            response_tokens = _estimate_tokens(result)
-            logger.info(f"{label}_method", extra={"method": "cerebras", "latency_ms": round(ms, 1)})
-            track_llm_call(label, "cerebras", model=CEREBRAS_MODEL, is_fallback=True,
-                           latency_ms=ms, prompt_tokens=prompt_tokens, response_tokens=response_tokens,
-                           total_tokens=prompt_tokens + response_tokens)
-            return result
-        except Exception as e:
-            cerebras_err = e
-            logger.warning(f"{label}_cerebras_failed", extra={"error": str(e), "fallback": "groq"})
-            track_llm_call(label, "cerebras", model=CEREBRAS_MODEL, is_fallback=True,
-                           error=str(e), prompt_tokens=prompt_tokens)
-    else:
-        logger.debug(f"{label}_cerebras_skipped (no key)")
-
-    # --- 4) Last resort: Groq (multi-key rotation) ---
-    try:
-        logger.info(f"{label}_attempt_groq", extra={"prompt_tokens_est": prompt_tokens})
-        t0 = _time.time()
-        result = await groq_chat_completion(
-            messages, temperature=temperature, max_tokens=max_tokens,
-        )
-        ms = (_time.time() - t0) * 1000
-        response_tokens = _estimate_tokens(result)
-        logger.info(f"{label}_method", extra={"method": "groq", "latency_ms": round(ms, 1)})
-        track_llm_call(label, "groq", model=GROQ_MODEL, is_fallback=True, latency_ms=ms,
-                       prompt_tokens=prompt_tokens, response_tokens=response_tokens,
-                       total_tokens=prompt_tokens + response_tokens)
-        return result
-    except Exception as e:
-        groq_err = e
-        logger.error(f"{label}_all_providers_failed", extra={
-            "gemini_err": str(gemini_err), "openrouter_err": str(or_err),
-            "cerebras_err": str(cerebras_err), "groq_err": str(groq_err),
-        })
-        track_llm_call(label, "groq", model=GROQ_MODEL, is_fallback=True, error=str(e),
-                       prompt_tokens=prompt_tokens)
-
-    raise RuntimeError(
-        f"All LLM providers failed — "
-        f"gemini: {gemini_err}, openrouter: {or_err}, cerebras: {cerebras_err}, groq: {groq_err}"
-    )
+    err_msg = ", ".join(f"{p}: {err}" for p, err in errors.items())
+    raise RuntimeError(f"All LLM providers failed — {err_msg}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

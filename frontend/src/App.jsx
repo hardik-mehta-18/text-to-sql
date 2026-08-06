@@ -4,6 +4,7 @@ import Training from './components/Training';
 import Chat from './components/Chat';
 import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
+import AdminLLM from './components/AdminLLM';
 import './App.css';
 
 function App() {
@@ -120,6 +121,9 @@ function App() {
           {page === 'chat' && (
              <button className="secondary btn-sm" onClick={disconnect}>🔌 Disconnect & Dashboard</button>
           )}
+          {token && page !== 'admin' && (
+             <button className="secondary btn-sm" onClick={() => setPage('admin')}>⚙️ LLM Config</button>
+          )}
           {token && (
              <button className="secondary btn-sm" onClick={handleLogout}>🚪 Logout</button>
           )}
@@ -132,6 +136,7 @@ function App() {
         {token && page === 'connect' && <Connect onConnected={(info) => { setSessionInfo(info); setPage('training'); }} />}
         {token && page === 'training' && <Training sessionInfo={sessionInfo} onComplete={handleSaveAndChat} onError={disconnect} />}
         {token && page === 'chat' && <Chat sessionInfo={sessionInfo} />}
+        {token && page === 'admin' && <AdminLLM token={token} onBack={() => setPage('dashboard')} />}
 
         {showFilterModal && (
           <FilterValuesModal 

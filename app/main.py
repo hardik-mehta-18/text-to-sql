@@ -218,6 +218,19 @@ class FilterKeysRequest(BaseModel):
     session_id: str
     keys: List[str]
 
+class LLMConfigItem(BaseModel):
+    provider: str
+    model: str
+    max_tokens: int
+    temperature: float
+    timeout_seconds: int
+    sequence_order: int
+    is_enabled: bool
+    api_key: Optional[str] = None
+
+class LLMConfigsListRequest(BaseModel):
+    configs: List[LLMConfigItem]
+
 
 class FilterValuesRequest(BaseModel):
     session_id: str
@@ -863,6 +876,19 @@ async def update_model_metadata(model_id: int, body: UpdateModelMetadataRequest,
         return {"message": "Model metadata updated successfully", "common_filter_keys": model.common_filter_keys}
     finally:
         db.close()
+
+@app.get("/api/admin/llm-configs")
+async def get_admin_llm_configs(user: User = Depends(get_current_user)):
+    from app.utils.llm_config_store import get_all_llm_configs
+    configs = await get_all_llm_configs()
+    return configs
+
+@app.post("/api/admin/llm-configs")
+async def update_admin_llm_configs(body: LLMConfigsListRequest, user: User = Depends(get_current_user)):
+    from app.utils.llm_config_store import update_llm_configs
+    configs_data = [item.dict() for item in body.configs]
+    updated = await update_llm_configs(configs_data)
+    return updated
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
 

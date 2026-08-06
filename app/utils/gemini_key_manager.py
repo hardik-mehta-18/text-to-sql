@@ -86,12 +86,14 @@ class GeminiKeyManager:
         self,
         prompt: str,
         generation_config: Optional[Any] = None,
+        model_name: Optional[str] = None,
     ) -> Any:
         """Call Gemini generate_content, rotating keys on quota errors.
 
         Args:
             prompt: The prompt string
             generation_config: Optional genai.GenerationConfig
+            model_name: Optional model override string
 
         Returns:
             Gemini response object
@@ -100,7 +102,7 @@ class GeminiKeyManager:
             RuntimeError: If all keys are exhausted
         """
         return await self._call_with_rotation(
-            self._do_generate, prompt, generation_config
+            self._do_generate, prompt, generation_config, model_name
         )
 
     async def embed_content(
@@ -194,7 +196,7 @@ class GeminiKeyManager:
         """No-op for backward compatibility (using pre-initialized Clients instead)."""
         pass
 
-    def _do_generate(self, prompt: str, generation_config: Optional[Any]) -> Any:
+    def _do_generate(self, prompt: str, generation_config: Optional[Any], model_name: Optional[str] = None) -> Any:
         """Synchronous Gemini generate_content call (runs in thread pool)."""
         client = self._clients[self._index]
         
@@ -205,8 +207,9 @@ class GeminiKeyManager:
             if hasattr(generation_config, "max_output_tokens") and generation_config.max_output_tokens is not None:
                 config.max_output_tokens = generation_config.max_output_tokens
                 
+        target_model = model_name if model_name is not None else self._model_name
         return client.models.generate_content(
-            model=self._model_name,
+            model=target_model,
             contents=prompt,
             config=config,
         )

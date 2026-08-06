@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text,
+    Column, Integer, String, Boolean, DateTime, Text, Float,
     LargeBinary, ForeignKey, JSON, UniqueConstraint, create_engine
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
@@ -226,6 +226,22 @@ class ChatThreadMessage(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     
     thread = relationship("ChatThread", back_populates="messages")
+
+class LLMConfig(Base):
+    """Dynamic configurations and parameters for LLM providers."""
+    __tablename__ = "llm_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(50), unique=True, nullable=False, index=True) # gemini, openrouter, cerebras, groq
+    model = Column(String(100), nullable=False)
+    api_url = Column(String(255), nullable=True)
+    max_tokens = Column(Integer, default=512, nullable=False)
+    temperature = Column(Float, default=0.3, nullable=False)
+    timeout_seconds = Column(Integer, default=60, nullable=False)
+    sequence_order = Column(Integer, nullable=False)
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    api_key = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 def hash_password(password: str, salt: Optional[str] = None) -> str:
     if salt is None:
