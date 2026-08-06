@@ -2,7 +2,7 @@
 
 gemini:
   api_key: ${GEMINI_API_KEY_1}  # primary key; KeyManager loads all 13 from env
-  model: "gemini-2.5-flash-lite"
+  model: "gemini-3.6-flash"
   embedding_model: "gemini-embedding-001"
   max_tokens: 8192
   temperature: 0.1

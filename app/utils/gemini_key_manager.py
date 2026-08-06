@@ -20,7 +20,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,19 @@ class GeminiKeyManager:
         self._index = 0                          # current active key index
         self._exhausted: set[int] = set()        # indices that hit quota today
         self._lock = asyncio.Lock()
+        
+        # Initialize Client wrappers for each key with attempts=1 (0 retries) to enable immediate failover
+        http_opts = types.HttpOptions(
+            timeout=30_000,  # 30 seconds
+            retry_options=types.HttpRetryOptions(
+                attempts=1
+            )
+        )
+        self._clients = [
+            genai.Client(api_key=k, http_options=http_opts)
+            for k in keys
+        ]
+        
         logger.info(
             f"GeminiKeyManager initialised with {len(keys)} key(s). "
             f"Model: {model_name}"
@@ -177,25 +191,39 @@ class GeminiKeyManager:
         )
 
     def _configure(self, key: str) -> None:
-        """Configure the genai library with the given key."""
-        genai.configure(api_key=key)
+        """No-op for backward compatibility (using pre-initialized Clients instead)."""
+        pass
 
     def _do_generate(self, prompt: str, generation_config: Optional[Any]) -> Any:
         """Synchronous Gemini generate_content call (runs in thread pool)."""
-        model = genai.GenerativeModel(self._model_name)
-        kwargs: Dict[str, Any] = {}
+        client = self._clients[self._index]
+        
+        config = types.GenerateContentConfig()
         if generation_config is not None:
-            kwargs["generation_config"] = generation_config
-        return model.generate_content(prompt, **kwargs)
+            if hasattr(generation_config, "temperature") and generation_config.temperature is not None:
+                config.temperature = generation_config.temperature
+            if hasattr(generation_config, "max_output_tokens") and generation_config.max_output_tokens is not None:
+                config.max_output_tokens = generation_config.max_output_tokens
+                
+        return client.models.generate_content(
+            model=self._model_name,
+            contents=prompt,
+            config=config,
+        )
 
     def _do_embed(self, text: str, task_type: str) -> List[float]:
         """Synchronous Gemini embed_content call (runs in thread pool)."""
-        result = genai.embed_content(
+        client = self._clients[self._index]
+        result = client.models.embed_content(
             model=self._embedding_model,
-            content=text,
-            task_type=task_type,
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type=task_type
+            )
         )
-        return result["embedding"]
+        if hasattr(result, "embeddings") and result.embeddings:
+            return result.embeddings[0].values
+        raise ValueError(f"Unexpected embedding response structure: {result}")
 
 
 # ── Singleton factory ─────────────────────────────────────────────────────

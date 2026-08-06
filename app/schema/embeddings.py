@@ -5,7 +5,8 @@ import logging
 from typing import List, Optional
 
 import numpy as np
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -25,9 +26,8 @@ class EmbeddingGenerator:
         """
         self.settings = settings or get_settings()
 
-        # Configure Gemini
-        genai.configure(api_key=self.settings.gemini.api_key)
-        self.model = genai.GenerativeModel(self.settings.gemini.model)
+        # Configure Gemini Client
+        self.client = genai.Client(api_key=self.settings.gemini.api_key)
 
     async def generate_table_description(
         self,
@@ -109,12 +109,14 @@ Provide a concise 2-sentence description. Focus on what data the table contains 
         try:
             import asyncio
             result = await asyncio.to_thread(
-                genai.embed_content,
+                self.client.models.embed_content,
                 model=self.settings.gemini.embedding_model,
-                content=text,
-                task_type="retrieval_document"
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type="retrieval_document"
+                )
             )
-            return result['embedding']
+            return result.embeddings[0].values
 
         except Exception as e:
             logger.error(f"Failed to generate embedding: {e}")
@@ -275,7 +277,10 @@ Provide a concise 2-sentence description. Focus on what data the table contains 
         Returns:
             Generated response
         """
-        # Note: google.generativeai doesn't have native async support
-        # We'll use asyncio.to_thread to run it in a thread pool
+        # Note: We run synchronous SDK calls in thread pools using asyncio.to_thread
         import asyncio
-        return await asyncio.to_thread(self.model.generate_content, prompt)
+        return await asyncio.to_thread(
+            self.client.models.generate_content,
+            model=self.settings.gemini.model,
+            contents=prompt
+        )

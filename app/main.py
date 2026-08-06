@@ -44,7 +44,6 @@ from app.utils.pii_vault import pii_vault
 from app.history.user_history import save_user_history
 from app.history.gdrive_sync import start_gdrive_sync_job, stop_gdrive_sync_job
 from app.query.user_cache import ensure_cache, find_person
-import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 from app.utils.gemini_key_manager import get_key_manager
 
