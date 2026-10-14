@@ -25,8 +25,9 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-# Quota-related error indicators (caught to trigger key rotation)
-_QUOTA_SIGNALS = (
+# Quota and key error indicators (caught to trigger key rotation)
+_ROTATABLE_SIGNALS = (
+    # Quota / Rate limits
     "quota",
     "429",
     "resource_exhausted",
@@ -36,13 +37,33 @@ _QUOTA_SIGNALS = (
     "too many requests",
     "daily limit",
     "per day",
+    # Permissions / Forbidden / Suspended project
+    "403",
+    "permission_denied",
+    "permissiondenied",
+    "forbidden",
+    "denied access",
+    # Authentication / Invalid keys
+    "401",
+    "unauthenticated",
+    "unauthorized",
+    "api_key_invalid",
+    "api key not valid",
+    "invalid api key",
+    "api_key_expired",
+    "key expired",
 )
 
 
-def _is_quota_error(exc: Exception) -> bool:
-    """Return True if the exception looks like a quota / rate-limit error."""
+def _is_rotatable_error(exc: Exception) -> bool:
+    """Return True if the exception looks like a quota, permission, or auth error that can be solved by rotating keys."""
     msg = str(exc).lower()
-    return any(signal in msg for signal in _QUOTA_SIGNALS)
+    return any(signal in msg for signal in _ROTATABLE_SIGNALS)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Backward-compatible alias for _is_rotatable_error."""
+    return _is_rotatable_error(exc)
 
 
 class GeminiKeyManager:
@@ -169,7 +190,7 @@ class GeminiKeyManager:
 
             except Exception as exc:
                 last_exc = exc
-                if _is_quota_error(exc):
+                if _is_rotatable_error(exc):
                     async with self._lock:
                         self._exhausted.add(key_index)
                         # Advance to next key
@@ -177,18 +198,18 @@ class GeminiKeyManager:
                         if remaining:
                             self._index = remaining[0]
                             logger.warning(
-                                f"Key #{key_index + 1} quota exceeded. "
+                                f"Key #{key_index + 1} unavailable or quota exceeded ({exc}). "
                                 f"Rotating to key #{self._index + 1}. "
                                 f"{len(remaining)} key(s) remaining."
                             )
                         else:
-                            logger.error("All Gemini API keys have hit their quota.")
+                            logger.error("All Gemini API keys have hit their quota or failed.")
                 else:
-                    # Non-quota error — don't rotate, just re-raise
+                    # Non-rotatable error — don't rotate, just re-raise
                     raise
 
         raise RuntimeError(
-            f"All {len(self._keys)} Gemini API key(s) have hit their quota. "
+            f"All {len(self._keys)} Gemini API key(s) have hit their quota or failed. "
             f"Last error: {last_exc}"
         )
 

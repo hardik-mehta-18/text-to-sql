@@ -45,6 +45,7 @@ from app.history.user_history import save_user_history
 from app.history.gdrive_sync import start_gdrive_sync_job, stop_gdrive_sync_job
 from app.query.user_cache import ensure_cache, find_person
 from google.api_core import exceptions as google_exceptions
+from google.genai import errors as genai_errors
 from app.utils.gemini_key_manager import get_key_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -1623,7 +1624,7 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
  
         except HTTPException:
             raise
-        except (google_exceptions.PermissionDenied, google_exceptions.Unauthenticated) as exc:
+        except (google_exceptions.PermissionDenied, google_exceptions.Unauthenticated, genai_errors.APIError) as exc:
             # API Key issue! Give system down error as requested.
             logger.error(f"[chronoplot] API Key issue detected: {exc}")
             system_down_text = await formatter._humanize_system_down()
@@ -1631,7 +1632,11 @@ async def chronoplot_chat_query(request: Request, body: ChronoChatRequest, _toke
         except Exception as exc:
             last_error = str(exc)
             # Check for other API-key-like signals in string form
-            if any(signal in last_error.lower() for signal in ["api key", "apikey", "quota exceeded", "all gemini api keys have hit their quota"]):
+            if any(signal in last_error.lower() for signal in [
+                "api key", "apikey", "quota exceeded", "all gemini api keys",
+                "permission_denied", "permission denied", "denied access", "403 forbidden",
+                "403 permission_denied", "unauthenticated", "resource_exhausted"
+            ]):
                 logger.error(f"[chronoplot] API Key/Quota issue detected (from string): {last_error}")
                 system_down_text = await formatter._humanize_system_down()
                 return ChronoChatResponse(mode="empty", text_summary=system_down_text)

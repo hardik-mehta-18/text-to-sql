@@ -80,6 +80,8 @@ _groq_lock = asyncio.Lock()
 _QUOTA_SIGNALS = (
     "rate_limit", "rate limit", "429", "quota", "resource_exhausted",
     "too many requests", "limit exceeded", "tokens per minute",
+    "403", "permission_denied", "forbidden", "denied access",
+    "401", "unauthenticated", "unauthorized", "invalid_api_key", "api key not valid",
 )
 
 
